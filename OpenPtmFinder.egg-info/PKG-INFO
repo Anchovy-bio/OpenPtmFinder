@@ -1,0 +1,6 @@
+Metadata-Version: 2.1
+Name: OpenPtmFinder
+Version: 1.0
+Summary: PTM Annotation Tool Based on Open Strategy Search
+Author: Annyshka
+Requires-Python: >=3.7

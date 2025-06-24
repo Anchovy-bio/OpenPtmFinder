@@ -1,0 +1,16 @@
+2025-06-24 19:24:58,774 - INFO - Launching the program
+2025-06-24 19:24:58,809 - INFO - Create a dataframe for calibration 14
+2025-06-24 19:24:58,809 - WARNING - Not enough psm for calibration. Step skipped.
+2025-06-24 19:24:58,809 - INFO - prediction RT completed successfully
+2025-06-24 19:25:04,791 - INFO - annotation of TMT lables completed successfully
+2025-06-24 19:25:04,801 - INFO - There are no annotations for 0 files.
+2025-06-24 19:25:05,019 - INFO - annotation of samples completed successfully
+2025-06-24 19:25:05,804 - INFO - FASTA concat completed successfully
+2025-06-24 19:25:05,956 - INFO - The dataframe with annotation is saved in /home/kopeykina/search_modification_project/output/annotated_df.pickle
+2025-06-24 19:25:06,781 - INFO - sorting PSM completed successfully
+2025-06-24 19:25:06,781 - INFO - TMT intensities were replaced or removed {'intensity_tmt_130N': 0, 'intensity_tmt_131N': 0, 'intensity_tmt_127C': 6, 'intensity_tmt_129N': 0, 'intensity_tmt_128C': 3, 'intensity_tmt_127N': 4, 'intensity_tmt_130C': 7, 'intensity_tmt_128N': 0, 'intensity_tmt_129C': 2}
+2025-06-24 19:25:08,256 - INFO - normalization completed successfully
+2025-06-24 19:25:13,518 - INFO - calculate statistics completed successfully
+2025-06-24 19:25:13,522 - INFO - The final statistical result is saved in /home/kopeykina/search_modification_project/output/final_stat_result.csv
+2025-06-24 19:25:13,522 - INFO - The program is complete.
+2025-06-24 19:25:13,522 - INFO - Launching web server for interactive exploration...
