@@ -40,7 +40,7 @@ setup(
     ],
     entry_points = {"console_scripts": ["OpenPtmFinder=openptmfinder.main:main"]},
     include_package_data = True,
-    package_data = {"openptmfinder": ["templates/*.html", "data/*.tsv","config.ini"]},
+    package_data = {"openptmfinder": ["templates/*.html", "data/*.csv","data/*.fasta","data/*.xml","config.ini"]},
     
     classifiers = ['Intended Audience :: Science/Research',
                    'Programming Language :: Python :: 3',

@@ -62,19 +62,21 @@ def setup_logger(log_file_path, verbosity='INFO'):
 
 def find_default_file(file):
     candidates = [
-        os.path.join(os.path.dirname(__file__), '..', file),
         os.path.join(os.getcwd(), file),
         os.path.expanduser(f'~/.config/OpenPtmFinder/{file}'),
         f'/etc/OpenPtmFinder/{file}',
+        os.path.join(os.path.dirname(__file__), file),
     ]
     for path in candidates:
         abs_path = os.path.abspath(path)
+        print(path)
+        print(abs_path)
         if os.path.isfile(abs_path):
             return abs_path
     return None  
 
 
-def parse_args():
+def parse_command():
     default_config = find_default_file('config.ini')
 
     parser = argparse.ArgumentParser(description="PTM Annotation Tool Based on Open strategy search", prog='OpenPtmFinder')
@@ -94,9 +96,8 @@ def parse_args():
 
     args = parser.parse_args()
 
-    if not args.config or not os.path.isfile(default_config):
+    if not args.config and not os.path.isfile(default_config):
         parser.error("No valid config file found. Please specify with --config.")
-
     return args
 
 
@@ -136,14 +137,15 @@ def existing_file(output_path, logger):
 
     
 def main():
-    args = parse_args()
+    args = parse_command()
     config = configparser.ConfigParser()
-    config.read(args.config)
+    config.read(os.path.abspath(args.config))
     paths = get_final_paths(args, config)
 
     output_dir = paths['output_dir']
     logger = setup_logger(os.path.join(output_dir, 'openptmfinder.log'), verbosity=args.verbosity)
     logger.info("Starting OpenPtmFinder...")
+    logger.info(f'Config file was found in {args.config}')
 
     fasta_file = paths['protein_db']
     xml_file = paths['unimod_db']

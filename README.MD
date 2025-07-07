@@ -8,10 +8,10 @@ PTM Annotation Tool Based on Open strategy search in proteomics
 
 **OpenPtmFinder** is a tool for shotgun labled proteomics for annotated peptide post-translation modifications, 
 in the results of open strategy analysis.
-> The program searches for peptides with a given modification type in all spectra based on mass shifts from the results of the open AA_stat search. 
-> The program selects post-translational modifications based on the Unimod database and calculates the position of the modification on the protein.
-> The program calculates the differential expression of the modifications found between the two groups.
-> At the output, you get a local web application with calculated statistics and graphs.
+**A.** The program searches for peptides with a given modification type in all spectra based on mass shifts from the results of the open AA_stat search. 
+**B.** The program selects post-translational modifications based on the Unimod database and calculates the position of the modification on the protein.
+**C.** The program calculates the differential expression of the modifications found between the two groups.
+**D.** At the output, you get a local web application with calculated statistics and graphs.
 
 
 The program includes search and normalization of different TMT tags, group-specific filtering of peptides based on FDR, and validation of modifications based on DeepLC predictions.
@@ -60,10 +60,6 @@ or command line options:
 ```
 OpenPtmFinder --grouping_file ./groups.csv --output_dir ./results --run-server
 ```
-![terminal animation](manual_pic/tty.gif)
-
-To check results, open the file called **report.html** in your browser.
-Example reports are shown [here](https://gorshkovlab.github.io/aa_stat_reports/).
 
 
 ### Open search results and spectrum files
@@ -133,9 +129,9 @@ options:
 ```
 ### Configuration file
 
-Configuration parameters can be set in a **config** file (default values and comments are in [default.cfg](AA_stat/default.cfg)).
+Configuration parameters can be set in a **config** file (default values and comments are in [config.ini](OpenPtmFinder/config.ini)).
 
-AA_stat supports the following parameters:
+OpenPtmFinder supports the following parameters:
 
 
 | Name                             | Default value                            | Description                                                                |
@@ -148,102 +144,24 @@ AA_stat supports the following parameters:
 | mzml_dir                         |                                          | Directory with mzml search files. Default value is pepxml directory. |
 | pepxml_dir                       |                                          | Directory with pepxml search files or separate files. Default value is current directory. |
 | output_dir                       |                                          | Directory to store the results. Default value is current directory. |
-
 |                                  | **[PARAMETERS]**                         |                                                                            |
 | delimiter                        | , (comma)                                | Delimiter used in CSV input files.                                         |
-| type_of_modifications            | 2                                        | Type of modification baesd on Unimod accsecions.                                           |
-| name_of_modifications            | Phospho                                  | Delimiter used in CSV input files.                                         |
-| localization_score_threshold     | 0.3                                      | Type of modification baesd on Unimod accsecions.                                           |
-| mass_tolerance                   | 0.012                                    | Delimiter used in CSV input files.                                         |
-| fdr_threshold                    | 0.05                                     | Type of modification baesd on Unimod accsecions.                                           |
-| type_tmt                         | TMT11plex                                | Delimiter used in CSV input files.                                         |
-| min_group_for_stats              | 5                                        | Type of modification baesd on Unimod accsecions.                                           |
-| calculation_pval                 | True                                     | Delimiter used in CSV input files.                                         |
-| sorting_pepxml                   | True                                     | Type of modification baesd on Unimod accsecions.                                           |
+| type_of_modifications            | 2                                        | Type of modification based on Unimod accsecions.                                           |
+| name_of_modifications            | Phospho, Oxidation                                  | Modification types for searching by Unimod.                                        |
+| localization_score_threshold     | 0.3                                      | Selection of peptides based on the reliability of modification localization.                                           |
+| mass_tolerance                   | 0.012                                    | Peptide mass error.                                        |
+| fdr_threshold                    | 0.05                                     | Error rate in peptide filtering.                                           |
+| type_tmt                         | TMT11plex                                | Design of the TMT experiment.                                         |
+| min_group_for_stats              | 5                                        | Minimum amount of data to calculate statistics by group.                                           |
+| calculation_pval                 | True                                     | To calculate statistics or not.                                         |
+| sorting_pepxml                   | True                                     | Sort files or not.                                           |
 
 
 ### Output files
 
-An example of AA_stat output can be found [here](https://gorshkovlab.github.io/aa_stat_reports/).
+An example of OpenPtmFinder output can be found [here](OpenPtmFinder/output/).
 
-AA_stat produces the following files:
+OpenPtmFinder produces the following files:
 
-**A.** Gaussian fit report (gauss_fit.pdf).
+**A.** 
 
-**B.** Summary histogram (summary.png).
-
-**C.** Charts (PNG and SVG files) of normalized frequencies for each significant mass shift interval. If MGF or mzML files are provided, tables with modifies peptide sequences and localization scores are generated.
-
-**D.** Summary table (aa_statistics_table.csv) of amino acid frequencies for all mass shifts with Unimod.org links for possible modifications.
-
-**E.** Summary table (p_values.csv) with p-values for each amino acid frequencies in each mass shift.
-
-**F.** HTML file (report.html) aggregates and illustrates all results.
-
-**G.** If MGF or mzML files are provided, a table with localization results is created (localization_statistics.csv).
-
-**A.** Gaussian fit file shows PSM distributions in intervals that were considered as mass shift peaks.
-Subplot titles correspond to mass shifts (interval center).
-Peaks are classified into 3 groups:
-PASSED - mass shift with good fit, which are considered for subsequent analysis;
-NO FIT - mass shifts for which the algorithm could not find Gaussian function;
-FAILED - mass shift with a fit not passing the configured filtering criteria.
-
-|![img1](manual_pic/gauss.png )|
-|------------------------------|
-| **Figure 1.** Examples of Gaussian fit results in gauss_fit.pdf.|
-
-**B.** Summary histogram shows numbers of filtered PSMs in all mass shift intervals.
-Number on top of the bin indicates the percentage of all identified PSMs.
-Each mass shift interval is filtered separately to the user-specified FDR level, using target-decoy approach.
-
-|![img2](manual_pic/summary.png)|
-|-------------------------------|
-| **Figure 2.** Example of Summary histogram.|
-
-**C.** Charts of normalized frequencies for each significant mass shift.
-Each chart is named according to the mass shift.
-Each bar in the chart denotes the normalized occurrence frequency
-of a specific amino acid residue in the given mass shift interval.
-The normalized frequency is calculated by:
-
-1. Counting all amino acids in all non-redundant peptides identified with the given mass shifts;
-
-2. Dividing the count for the given residue by the total amino acid count for the interval
-   to obtain the occurrence frequency of the residue;
-
-3. Normalizing the occurrence frequency of the residue
-   by the occurrence frequency of the same residue for the zero mass shift interval.
-
-If the normalized frequency of a residue significantly exceeds 1,
-that means that this residue is "enriched" in the peptides identified with the corresponding mass shift,
-suggesting that there is a connection between this residue and the cause of the mass shift.
-In the simplest case, this residue is modified:
-
-
-|![img3](manual_pic/ms.png)|
-|--------------------------|
-| **Figure 3.** Example of a normalized frequency chart for 15.9943 mass shift (green). Orange -- the percentage of peptides that contain at least one AA residue of a certain kind. Blue -- successful localizations of mass shifts at each AA (only if MS/MS spectra are provided). The counts are not normalized.|
-
-
-**D.** Summary table (aa_statistics_table.csv) of amino acid frequencies for all mass shifts with peptide counts and Unimod.org links for possible modifications.
-
-**E.** Summary table (p_values.csv) with p-values for all amino acid frequencies in all mass shifts that indicates the significant deviation amino acid frequency from zero mass shift peak.
-
-**F.** HTML file (report.html) aggregates and illustrates all results. Examples can be found [here](https://gorshkovlab.github.io/aa_stat_reports/).
-
-**G.** A summary of localization shows the number of peptides in each bin for which a modification was successfully localized in MS/MS.
-Localization is done by generating theoretical spectra of possible isoforms and scoring them against the experimental spectrum.
-If there is a clear winner in terms of score, the spectrum is considered localized.
-
-|Column name|Description|
-|------------|-----------|
-|mass shift|Considered mass shift mass.|
-|# peptides in bin| Number of peptides that passed all filtering procedures.|
-|is isotope| Boolean. True if mass shift is a potential isotope of some other mass shift.|
-|isotope index| If 'is isotope' is True, this column contains the mass of monoisotopic peak.|
-|sum of mass shifts| Shows all possible pairs of mass shifts that produce the given mass shift.|
-|unimod candidates| Localization candidates retrieved from Unimod.org database for given mass shift.|
-|aa_stat candidates| Localization candidates from AA_stat statistics.|
-|candicates for loc| Combination of amino acid candidates from all sources: Unimod, AA_stat results, isotope clusters, sum of modifications, considered for localization of mass shift using MS/MS spectra.|
-|localization| Localization statistics for given mass shift using MS/MS spectra provided in a format "AminoAcid_MassShift:number-of-peptides-with-this-localization". If there is no clear leader for a specific peptide's mass shift localization, it counts as 'non-localized'.

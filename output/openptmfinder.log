@@ -1,21 +1,21 @@
-[12:32:07] - INFO - Starting OpenPtmFinder...
-[12:32:07] - INFO - File /home/kopeykina/aa_stat_results_TMT/banner/interpretations.json already exists, step skipped.
-[12:32:07] - INFO - File /home/kopeykina/search_modification_project/output/unimod.csv already exists, step skipped.
-[12:32:07] - INFO - File /home/kopeykina/search_modification_project/output/cataloque.csv already exists, step skipped.
-[12:32:07] - INFO - File /home/kopeykina/search_modification_project/output/unimod_search.csv already exists, step skipped.
-[12:32:07] - INFO - File /home/kopeykina/search_modification_project/output/pepxml_psms.pickle already exists, step skipped.
-[12:32:07] - ERROR - File does not exist at /home/kopeykina/search_modification_project/output/predicted_rt.csv
+[15:36:46] - INFO - Starting OpenPtmFinder...
+[15:36:46] - INFO - File /home/kopeykina/aa_stat_results_TMT/banner/interpretations.json already exists, step skipped.
+[15:36:46] - INFO - File /home/kopeykina/search_modification_project/output/unimod.csv already exists, step skipped.
+[15:36:46] - INFO - File /home/kopeykina/search_modification_project/output/cataloque.csv already exists, step skipped.
+[15:36:46] - INFO - File /home/kopeykina/search_modification_project/output/unimod_search.csv already exists, step skipped.
+[15:36:46] - INFO - File /home/kopeykina/search_modification_project/output/pepxml_psms.pickle already exists, step skipped.
+[15:36:46] - ERROR - File does not exist at /home/kopeykina/search_modification_project/output/predicted_rt.csv
 NoneType: None
-[12:32:07] - INFO - prediction RT completed successfully
-[12:32:07] - INFO - File /home/kopeykina/search_modification_project/output/filtered_psms.pickle already exists, step skipped.
-[12:32:12] - INFO - annotation of TMT lables completed successfully
-[12:32:12] - INFO - annotation of samples completed successfully
-[12:32:13] - INFO - FASTA concat completed successfully
-[12:32:13] - INFO - The dataframe with annotation is saved in /home/kopeykina/search_modification_project/output/annotated_df.pickle
-[12:32:14] - INFO - sorting PSM completed successfully
-[12:32:14] - INFO - TMT intensities were replaced or removed {'intensity_tmt_130N': 0, 'intensity_tmt_131N': 0, 'intensity_tmt_127C': 6, 'intensity_tmt_129N': 0, 'intensity_tmt_128C': 3, 'intensity_tmt_127N': 4, 'intensity_tmt_130C': 7, 'intensity_tmt_128N': 0, 'intensity_tmt_129C': 2}
-[12:32:15] - INFO - normalization completed successfully
-[12:32:20] - INFO - calculate statistics completed successfully
-[12:32:20] - INFO - The final statistical result is saved in /home/kopeykina/search_modification_project/output/final_stat_result.csv
-[12:32:20] - INFO - The program is complete.
-[12:32:20] - INFO - Launching web server for interactive exploration...
+[15:36:46] - INFO - prediction RT completed successfully
+[15:36:46] - INFO - File /home/kopeykina/search_modification_project/output/filtered_psms.pickle already exists, step skipped.
+[15:36:52] - INFO - annotation of TMT lables completed successfully
+[15:36:52] - INFO - annotation of samples completed successfully
+[15:36:52] - INFO - FASTA concat completed successfully
+[15:36:53] - INFO - The dataframe with annotation is saved in /home/kopeykina/search_modification_project/output/annotated_df.pickle
+[15:36:53] - INFO - sorting PSM completed successfully
+[15:36:53] - INFO - TMT intensities were replaced or removed {'intensity_tmt_130N': 0, 'intensity_tmt_131N': 0, 'intensity_tmt_127C': 6, 'intensity_tmt_129N': 0, 'intensity_tmt_128C': 3, 'intensity_tmt_127N': 4, 'intensity_tmt_130C': 7, 'intensity_tmt_128N': 0, 'intensity_tmt_129C': 2}
+[15:36:55] - INFO - normalization completed successfully
+[15:37:00] - INFO - calculate statistics completed successfully
+[15:37:00] - INFO - The final statistical result is saved in /home/kopeykina/search_modification_project/output/final_stat_result.csv
+[15:37:00] - INFO - The program is complete.
+[15:37:00] - INFO - Launching web server for interactive exploration...
