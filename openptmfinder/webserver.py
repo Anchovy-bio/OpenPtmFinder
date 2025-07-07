@@ -128,9 +128,11 @@ def get_protein_plot():
 
     # Создание графика
     fig = go.Figure()
-    leg = []
+
     for modification in unique_mods:
         subset = df[df['Modification'] == modification]
+
+        # Точки
         fig.add_trace(go.Scatter(
             x=subset['position_in_protein'].tolist(),
             y=subset['count'].tolist(),
@@ -140,60 +142,101 @@ def get_protein_plot():
                 color=mod_to_color[modification],
                 line=dict(color='white', width=0.7)
             ),
-            hoverinfo="all",
-            hovertemplate="Position mod: %{x}<br>Count PSMs: %{y}<extra></extra>",
-            hoverlabel=dict(
-                font_family='Khula, sans-serif',
-                font_size=14,
-                bgcolor="#2d313c",
-                bordercolor="#ffcc00",
-            ),
+            hovertemplate="Position: %{x}<br>Count PSMs: %{y}<extra></extra>",
             name=modification,
             legendgroup=modification,
             showlegend=True
         ))
+
+        # Линии вверх
         for line in subset.index:
             fig.add_trace(go.Scatter(
                 x=[subset.position_in_protein[line], subset.position_in_protein[line]],
                 y=[0, subset['count'][line]],
                 mode='lines',
+                line=dict(color=mod_to_color[modification], width=1),
                 name=modification,
                 legendgroup=modification,
                 showlegend=False,
-                hoverinfo="skip",
-                line=dict(color=mod_to_color[modification])
+                hoverinfo="skip"
             ))
 
-    fig.update_layout(title=f"Modifications in the protein {protein}", xaxis_title="position of modification", yaxis_title="count PSMs",
-                      title_x=0.5, font=dict(family="Khula, sans-serif", size=16, color="black"), 
-                      plot_bgcolor='white',paper_bgcolor='lightgrey',xaxis_linecolor='black',yaxis_linecolor='black')
-    fig.update_layout(margin=dict(t=80, b=40)) #посмотреть что измениться
+    # Максимумы
     xmax = df['position_in_protein'].max()
     ymax = df['count'].max()    
 
+    # Прямоугольники для плотности покрытия
     amino_acids = list(df_local.iloc[0]['sequence'])
     heights = density_df['Density'].tolist()
-    
-    bottom = np.arange(len(amino_acids))+0.5
-    colors = [f'rgba(255,0,0,{h})' for h in heights]
+    bottom = np.arange(len(amino_acids)) + 0.5
 
     fig.add_trace(go.Bar(
         x=[1] * len(amino_acids),
         y=[-round(ymax * 0.1, 1)] * len(amino_acids),
         base=bottom,
         width=[round(ymax * 0.1, 1) * 2] * len(amino_acids),
-        marker_color=colors,
+        marker=dict(
+            color=heights,
+            colorscale="Reds",
+            colorbar=dict(
+                title=dict(text="Degree of<br>protein coverage",font=dict(family="Arial", size=14)),
+                tickfont=dict(size=12),
+                thickness=15,
+                x=1.01,
+                bgcolor="rgba(240,240,240,0.9)",
+                bordercolor="black",
+                borderwidth=1,
+            ),
+            line=dict(color='black', width=0.5)
+        ),
         text=[f"<b>{aa}</b>" for aa in amino_acids],
         hovertemplate=[
-            f"Aminoacid: {aa}<br>Position: {i+1}<br>Density: {d}<extra></extra>"
+            f"Aminoacid: {aa}<br>Position: {i+1}<br>Density: {d:.3f}<extra></extra>"
             for i, (aa, d) in enumerate(zip(amino_acids, heights))
         ],
         textposition="inside",
-        textfont=dict(family="Arial Black", size=30),
+        textfont=dict(family="Arial Black", size=26),
         orientation="h",
-        showlegend=False,
-        marker_line_color='black'
+        showlegend=False
     ))
+
+    # Единое оформление
+    fig.update_layout(
+        title=dict(
+            text=f"<b>Protein {protein}</b>",
+            x=0.0,
+            font=dict(family="Arial", size=20, color="black")
+        ),
+        xaxis=dict(
+            title=dict(text="Position of modification",font=dict(size=16)),
+            linecolor="black",
+            showgrid=False,
+            ticks="outside",
+            tickfont=dict(size=14)
+        ),
+        yaxis=dict(
+            title=dict(text="Count PSMs",font=dict(size=16)),
+            linecolor="black",
+            showgrid=False,
+            ticks="outside",
+            tickfont=dict(size=14)
+        ),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        font=dict(family="Arial", size=14, color="black"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1,
+            xanchor="center",
+            x=0.5,
+            bgcolor="rgba(240,240,240,0.9)",
+            bordercolor="black",
+            borderwidth=1,
+            title=dict(text="<b>Modification Types</b>", font=dict(size=14, family="Arial"))
+        ),
+        margin=dict(t=20, b=60, l=80, r=100)
+    )
     fig.update_layout(xaxis_autorange=True, yaxis_autorange=True)
 
     graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)

@@ -16,7 +16,6 @@ from scipy import stats
 import sys
 import io
 
-
 from .functions import (
     create_unimod_dataframe,
     cataloque_create,
@@ -32,19 +31,34 @@ from .functions import (
     calibrate_RT_gaus_full
 )
 
-def setup_logger(log_file):
-    logger = logging.getLogger("proteomics")
-    if not logger.handlers:  # ← предотвращает повторное добавление
-        logger.setLevel(logging.DEBUG)
-        fh = logging.FileHandler(log_file, mode='w')
-        fh.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        fh.setFormatter(formatter)
-        logger.addHandler(fh)
+
+def setup_logger(log_file_path, verbosity='INFO'):
+
+    log_level = getattr(logging, verbosity.upper(), logging.INFO)
+
+    logger = logging.getLogger("OpenPtmFinder")
+    logger.setLevel(log_level)
+
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    formatter = logging.Formatter(
+        fmt='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='[%H:%M:%S]')
+    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+    file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
     return logger
 
-import argparse
-import os
+
 
 def find_default_file(file):
     candidates = [
@@ -54,7 +68,6 @@ def find_default_file(file):
         f'/etc/OpenPtmFinder/{file}',
     ]
     for path in candidates:
-        print(path)
         abs_path = os.path.abspath(path)
         if os.path.isfile(abs_path):
             return abs_path
@@ -64,16 +77,42 @@ def find_default_file(file):
 def parse_args():
     default_config = find_default_file('config.ini')
 
-    parser = argparse.ArgumentParser(description="PTM Annotation Tool Based on Open strategy search")
-    parser.add_argument('--config', default=default_config, help='Path to config file')
+    parser = argparse.ArgumentParser(description="PTM Annotation Tool Based on Open strategy search", prog='OpenPtmFinder')
+    parser.add_argument('--config', default=default_config, help='.ini file with parameters. If there is no file, OpenPtmFinder uses default one.')
+    parser.add_argument('--output_dir', help='Directory to store the results. Default value is current directory.')
+    parser.add_argument('--pepxml_dir', nargs='+', help='Directory with pepxml search files or separate files. Default value is current directory.')
+    parser.add_argument('--mzml_dir', help='Directory with mzml search files. Default value is current directory.')
+    parser.add_argument('--AAstat_dir', help='Directory with AA_stat search results (.csv and interpretations.json). Default value is current directory.')
+    
+    parser.add_argument('--protein_db', help='Directory with .fasta file with proteins. If there is no file, OpenPtmFinder uses default one.')
+    parser.add_argument('--unimod_db', help='Directory with .xml UNIMOD database. An example can be found at https://github.com/Anchovy-bio/OpenPtmFinder/tree/main/data/unimod')
+    parser.add_argument('--grouping_file', help='Directory with annotation file of samples by TMT groups. An example can be found at https://github.com/Anchovy-bio/OpenPtmFinder/blob/main/config.ini')
+    
     parser.add_argument('--run-server', action='store_true', help='Start web server after processing')
+    parser.add_argument('-n', type=int, help='Maximum number of processes to use.', default=1)
+    parser.add_argument('--verbosity', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Logging verbosity level')
 
     args = parser.parse_args()
 
-    if not args.config or not os.path.isfile(args.config):
+    if not args.config or not os.path.isfile(default_config):
         parser.error("No valid config file found. Please specify with --config.")
 
     return args
+
+
+def get_final_paths(args, config):
+    def cfg(section, key, fallback='.'):
+        return config.get(section, key, fallback=fallback)
+
+    return {
+        'output_dir': args.output_dir or cfg('PATHS', 'output_dir'),
+        'pepxml_dir': args.pepxml_dir or cfg('PATHS', 'pepxml_dir').split(),
+        'mzml_dir': args.mzml_dir or cfg('PATHS', 'mzml_dir').split(),
+        'aa_stat_dir': args.AAstat_dir or cfg('PATHS', 'aa-stat_dir'),
+        'protein_db': args.protein_db or cfg('PATHS', 'protein_db'),
+        'unimod_db': args.unimod_db or cfg('PATHS', 'unimod_db'),
+        'grouping_file': args.grouping_file or cfg('PATHS', 'grouping_file'),
+    }
 
 
 
@@ -86,28 +125,37 @@ def safe_execute(logger, description, func, *args, **kwargs):
         logger.error(f"Error while {description}: {e}", exc_info=True)
         return None
     
-def existing_file(output_path):
+    
+def existing_file(output_path, logger):
     if os.path.exists(output_path):
-        print(f"File {output_path} already exists, step skipped.")
+        logger.info(f"File {output_path} already exists, step skipped.")
         return True
-    else: 
+    else:
+        logger.error(f"File does not exist at {output_path}", exc_info=True)
         return False
 
+    
 def main():
     args = parse_args()
     config = configparser.ConfigParser()
     config.read(args.config)
+    paths = get_final_paths(args, config)
 
-    output_dir = config['PATHS']['output_dir']
-    logger = setup_logger(output_dir+'openptmfinder.log')
-    logger.info("Launching the program")
+    output_dir = paths['output_dir']
+    logger = setup_logger(os.path.join(output_dir, 'openptmfinder.log'), verbosity=args.verbosity)
+    logger.info("Starting OpenPtmFinder...")
 
-    fasta_file = config['PATHS']['fasta_file']
-    data_dir = config['PATHS']['data_dir']
-    mzml_dir = config['PATHS']['mzml_dir']
-    pepxml_dir = config['PATHS']['pepxml_dir']
-    xml_file = config['PATHS']['unimod_xml_file']
-    interpretation_file = config['PATHS']['interpretation_file']
+    fasta_file = paths['protein_db']
+    xml_file = paths['unimod_db']
+    group_df_link = paths['grouping_file']
+    data_dir = paths['aa_stat_dir']
+    mzml_dir = paths['mzml_dir']
+    pepxml_dir = paths['pepxml_dir']
+    print(data_dir)
+    print(os.path.join(data_dir,'interpretations.json'))
+
+    if existing_file(os.path.join(data_dir,'interpretations.json'),logger):
+        interpretation_file = os.path.join(data_dir,'interpretations.json')
 
     type_of_modification = config['PARAMETERS']['type_of_modifications']
     name_of_modification = config['PARAMETERS']['name_of_modifications']
@@ -115,7 +163,6 @@ def main():
     mass_tolerance = float(config['PARAMETERS']['mass_tolerance'])
     fdr_threshold = float(config['PARAMETERS']['fdr_threshold'])
     type_tmt = config['PARAMETERS']['type_tmt']
-    group_df_link = config['PATHS']['group_df_link']
     calculation_pval = config.getboolean('PARAMETERS', 'calculation_pval')
     min_group_for_stats = int(config['PARAMETERS']['min_group_for_stats'])
     sorting_pepxml=config['PARAMETERS']['sorting_pepxml']
@@ -125,7 +172,7 @@ def main():
     filtered_df_with_intens = None
     stats_df = None
     
-    if existing_file(output_dir+'unimod.csv')==True:
+    if existing_file(output_dir+'unimod.csv', logger):
         unimod_df=pd.read_csv(output_dir+'unimod.csv')
     else:
         unimod_df = safe_execute(logger, "Processing AA_stat results", create_unimod_dataframe, interpretation_file, xml_file)
@@ -135,7 +182,7 @@ def main():
 
         
     if unimod_df is not None:
-        if existing_file(output_dir+'cataloque.csv')==True and existing_file(output_dir+'unimod_search.csv')==True:
+        if existing_file(output_dir+'cataloque.csv', logger)==True and existing_file(output_dir+'unimod_search.csv', logger)==True:
             cataloque=pd.read_csv(output_dir+'cataloque.csv')
             unimod_search=pd.read_csv(output_dir+'unimod_search.csv')
         else:
@@ -154,7 +201,7 @@ def main():
                 unimod_search.to_csv(unimod_search_csv, index=False)
             
             
-    if existing_file(output_dir+'pepxml_psms.pickle')==True:
+    if existing_file(output_dir+'pepxml_psms.pickle', logger):
         all_psms_df=pd.read_pickle(output_dir+'pepxml_psms.pickle')
     else:
         all_psms_df = safe_execute(
@@ -171,7 +218,7 @@ def main():
             logger.info(f"Found {len(all_psms_df)} PSM pepXML files.")
             
             
-    if existing_file(output_dir+'predicted_rt.csv')==True:
+    if existing_file(output_dir+'predicted_rt.csv', logger):
         predicted_rt_df=pd.read_csv(output_dir+'predicted_rt.csv')
     else:
         if all_psms_df is not None:
@@ -194,7 +241,7 @@ def main():
                 filtered_df=all_psms_df.copy()
             
             
-    if existing_file(output_dir+'filtered_psms.pickle')==True:
+    if existing_file(output_dir+'filtered_psms.pickle', logger):
         filtered_df_with_intens=pd.read_pickle(output_dir+'filtered_psms.pickle')
     else:
         if filtered_df is not None:

@@ -1,2 +1,0 @@
-[console_scripts]
-OpenPtmFinder = openptmfinder.main:main

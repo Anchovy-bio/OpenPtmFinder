@@ -12,9 +12,8 @@ from deeplc import DeepLC, FeatExtractor
 from scipy import stats as scipy_stats
 
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger('proteomics')
+#logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def load_unimod_interpretations(interpretation_file):
     """Loads data from a Unimod interpretation file."""
@@ -284,9 +283,14 @@ def process_pepxml_files(cataloque, pepxml_dir, mass_tolerance=0.012, fdr_thresh
             mod: set(cataloque.loc[cataloque['file_mass'] == mod, 'peptide'])
             for mod in modmass
         }
-
-        xml_files = glob.glob(f"{pepxml_dir}/*.pepXML")[:20]
-        if not xml_files:
+        if len(pepxml_dir)==1 and '.pepXML' not in pepxml[0]:
+            xml_files = glob.glob(f"{pepxml_dir}/*.pepXML")
+        else:
+            xml_files=pepxml_dir
+            
+        if xml_files:
+            logger.info(f'Total {len(xml_files)} pepxml files found.')
+        else:
             logger.warning(f"No pepXML files found in directory: {pepxml_dir}")
             return pd.DataFrame()
 
