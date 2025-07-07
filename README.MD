@@ -28,13 +28,8 @@ OpenPtmFinder requires Python 3.7 or newer. You can create microenvironments for
 ```
 pyenv virtualenv 3.10 OpenPtmFinder
 ```
-Install from PyPI (all platforms):
 
-```
-pip install OpenPtmFinder
-```
-
-Alternatively, you can install directly from GitHub:
+You can install directly from GitHub:
 
 ```
 pip install git+https://github.com/Anchovy-bio/OpenPtmFinder
