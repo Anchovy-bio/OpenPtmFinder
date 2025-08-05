@@ -1,21 +1,23 @@
-[15:36:46] - INFO - Starting OpenPtmFinder...
-[15:36:46] - INFO - File /home/kopeykina/aa_stat_results_TMT/banner/interpretations.json already exists, step skipped.
-[15:36:46] - INFO - File /home/kopeykina/search_modification_project/output/unimod.csv already exists, step skipped.
-[15:36:46] - INFO - File /home/kopeykina/search_modification_project/output/cataloque.csv already exists, step skipped.
-[15:36:46] - INFO - File /home/kopeykina/search_modification_project/output/unimod_search.csv already exists, step skipped.
-[15:36:46] - INFO - File /home/kopeykina/search_modification_project/output/pepxml_psms.pickle already exists, step skipped.
-[15:36:46] - ERROR - File does not exist at /home/kopeykina/search_modification_project/output/predicted_rt.csv
+[20:35:04] - INFO - Starting OpenPtmFinder...
+[20:35:04] - INFO - Config file was found in /home/kopeykina/config.ini
+[20:35:04] - INFO - Using 19 process(es)
+[20:35:04] - INFO - File /home/kopeykina/aa_stat_results_TMT/banner/interpretations.json already exists, step skipped.
+[20:35:04] - INFO - File /home/kopeykina/search_modification_project/output/unimod.csv already exists, step skipped.
+[20:35:04] - INFO - File /home/kopeykina/search_modification_project/output/cataloque.csv already exists, step skipped.
+[20:35:04] - INFO - File /home/kopeykina/search_modification_project/output/unimod_search.csv already exists, step skipped.
+[20:35:04] - INFO - File /home/kopeykina/search_modification_project/output/pepxml_psms.pickle already exists, step skipped.
+[20:35:04] - ERROR - File does not exist at /home/kopeykina/search_modification_project/output/predicted_rt.csv
 NoneType: None
-[15:36:46] - INFO - prediction RT completed successfully
-[15:36:46] - INFO - File /home/kopeykina/search_modification_project/output/filtered_psms.pickle already exists, step skipped.
-[15:36:52] - INFO - annotation of TMT lables completed successfully
-[15:36:52] - INFO - annotation of samples completed successfully
-[15:36:52] - INFO - FASTA concat completed successfully
-[15:36:53] - INFO - The dataframe with annotation is saved in /home/kopeykina/search_modification_project/output/annotated_df.pickle
-[15:36:53] - INFO - sorting PSM completed successfully
-[15:36:53] - INFO - TMT intensities were replaced or removed {'intensity_tmt_130N': 0, 'intensity_tmt_131N': 0, 'intensity_tmt_127C': 6, 'intensity_tmt_129N': 0, 'intensity_tmt_128C': 3, 'intensity_tmt_127N': 4, 'intensity_tmt_130C': 7, 'intensity_tmt_128N': 0, 'intensity_tmt_129C': 2}
-[15:36:55] - INFO - normalization completed successfully
-[15:37:00] - INFO - calculate statistics completed successfully
-[15:37:00] - INFO - The final statistical result is saved in /home/kopeykina/search_modification_project/output/final_stat_result.csv
-[15:37:00] - INFO - The program is complete.
-[15:37:00] - INFO - Launching web server for interactive exploration...
+[20:35:05] - INFO - prediction RT completed successfully
+[20:35:05] - INFO - File /home/kopeykina/search_modification_project/output/filtered_psms.pickle already exists, step skipped.
+[20:35:15] - INFO - annotation of TMT lables completed successfully
+[20:35:15] - INFO - annotation of samples completed successfully
+[20:35:17] - INFO - FASTA concat completed successfully
+[20:35:17] - INFO - The dataframe with annotation is saved in /home/kopeykina/search_modification_project/output/annotated_df.pickle
+[20:35:18] - INFO - sorting PSM completed successfully
+[20:35:18] - INFO - TMT intensities were replaced or removed {'intensity_tmt_130N': 0, 'intensity_tmt_131N': 0, 'intensity_tmt_127C': 6, 'intensity_tmt_129N': 0, 'intensity_tmt_128C': 3, 'intensity_tmt_127N': 4, 'intensity_tmt_130C': 7, 'intensity_tmt_128N': 0, 'intensity_tmt_129C': 2}
+[20:35:21] - INFO - normalization completed successfully
+[20:35:29] - INFO - calculate statistics completed successfully
+[20:35:29] - INFO - The final statistical result is saved in /home/kopeykina/search_modification_project/output/final_stat_result.csv
+[20:35:29] - INFO - The program is complete.
+[20:35:29] - INFO - Launching web server for interactive exploration...

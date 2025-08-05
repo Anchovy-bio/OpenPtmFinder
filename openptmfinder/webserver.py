@@ -15,21 +15,20 @@ from ast import literal_eval
 template_dir = os.path.join(os.path.dirname(__file__), 'templates')
 app = Flask(__name__, template_folder=template_dir)
 output = os.environ.get('OUTPUT_DIR', '')
-full_df = pd.read_pickle(output+'annotated_df.pickle')
-diff_resuls=pd.read_csv(output+'final_stat_result.csv')
+port_n=os.environ.get('port_n', '')
+full_df = pd.read_pickle(os.path.join(output, 'annotated_df.pickle'))
+diff_resuls=pd.read_csv(os.path.join(output,'final_stat_result.csv'))
 
 @app.route("/")
 def index():
-    diff_resuls['Modification'] = diff_resuls['Modification'].apply(lambda x: list(set(sum(literal_eval(x),[])))[0])
-    diff_resuls['spectrum_x'] = diff_resuls['spectrum_x'].apply(lambda x: list(set(sum(literal_eval(x),[]))))
     chart_df=full_df[full_df['position_in_protein'].notna()]
     chart_df=chart_df.drop_duplicates(subset=['position_in_protein','id_prot','Modification'])
-    pie_labels=chart_df['Modification'].value_counts().keys()
-    pie_values=chart_df['Modification'].value_counts().values
+    chart_df['Mods']=chart_df['Modification'].apply(lambda x: x.split('@')[0])
+    pie_labels=chart_df['Mods'].value_counts().keys()
+    pie_values=chart_df['Mods'].value_counts().values
     if len(pie_labels)==1:
         pie_labels=list(pie_labels)
         pie_values=list(pie_values)
-    print(pie_values)
 
     fig_pie = go.Figure(data=[go.Pie(
         labels=pie_labels,
@@ -39,7 +38,8 @@ def index():
         textinfo='label+percent',
         insidetextorientation='radial'
     )])
-    fig_pie.update_layout(title='Number of modification sites found in filtered mass-spectra',
+    fig_pie.update_layout(
+        #title='Number of modification sites found in filtered mass-spectra',
         title_x=0.5,
         font=dict(family="Khula, sans-serif", size=16, color="black"),
         paper_bgcolor='white',
@@ -50,7 +50,7 @@ def index():
     group1=diff_resuls['intensity_TMT_group1'].apply(lambda x: str(len(x.split(','))))
     group2=diff_resuls['intensity_TMT_group2'].apply(lambda x: str(len(x.split(','))))
     diff_resuls['number of samples group1/group2']=group1+'/'+group2
-    diff_resuls['number of spectra']=diff_resuls['spectrum_x'].apply(len)
+    diff_resuls['number of spectra']=diff_resuls['spectrum_x'].apply(lambda x: x.count('banner'))
     columns=['id_prot','position_in_protein','Modification','number of samples group1/group2','number of spectra','pvalue_correct']
     stats_table_html = diff_resuls[columns].to_html(index=False, classes='centered-table', table_id="modTable")
     protein_count = diff_resuls['id_prot'].nunique()
@@ -71,17 +71,13 @@ def get_protein_plot():
     data = request.get_json()
     protein = data.get('proteinId', '').strip()
     print(protein)
-
-    uniprot_pattern = r"^[OPQ][0-9][A-Z0-9]{3}[0-9]$|^[A-NR-Z][0-9]{5}$|^A0A[A-Z0-9]{7}$"
-    if not protein or not re.match(uniprot_pattern, protein):
-        return jsonify({'success': False, 'error': 'Invalid UniProt ID'}), 400
     
     if full_df.empty:
         return jsonify({'success': False, 'error': 'Dataframe is empty.'})
     
     df_local = full_df[(full_df['id_prot'] == protein)]
     if df_local.empty:
-        return jsonify({'success': False, 'error': 'Data for the specified protein was not found.'})
+        return jsonify({'success': False, 'error': 'Data for the specified protein was not found. Please check that the entered ID is correct.'})
 
     def peptide_density_distribution(protein_sequence, peptides):
         peptide_positions = []
@@ -184,7 +180,7 @@ def get_protein_plot():
                 thickness=15,
                 x=1.01,
                 bgcolor="rgba(240,240,240,0.9)",
-                bordercolor="black",
+                bordercolor="white",
                 borderwidth=1,
             ),
             line=dict(color='black', width=0.5)
@@ -203,8 +199,8 @@ def get_protein_plot():
     # Единое оформление
     fig.update_layout(
         title=dict(
-            text=f"<b>Protein {protein}</b>",
-            x=0.0,
+            text=f"<b>{protein}</b>",
+            x=0.95,
             font=dict(family="Arial", size=20, color="black")
         ),
         xaxis=dict(
@@ -243,4 +239,4 @@ def get_protein_plot():
     return jsonify({'success': True, 'graphJSON': graphJSON})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10005, debug=True, use_reloader=False)
+    app.run(host='0.0.0.0', port=int(port_n), debug=True, use_reloader=False)

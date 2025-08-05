@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <title>Protein Modification Visualization</title>
 
-  <!-- Fonts and CSS -->
   <link href="https://fonts.googleapis.com/css2?family=Khula:wght@300;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
   <style>
@@ -54,8 +53,21 @@
       color: #ffcc00;
     }
 
-    /* Dark styling for DataTables dropdown */
+    /* Dark styling for DataTables dropdown and its options */
     select[name="modTable_length"] {
+      background-color: #2d313c;
+      color: #fff;
+      border: 1px solid #444;
+      padding: 5px;
+    }
+
+    /* Исправлено: стиль для опций внутри выпадающего списка */
+    select[name="modTable_length"] option {
+      background-color: #2d313c;
+      color: #fff;
+    }
+    
+    div.dataTables_wrapper div.dataTables_filter input {
       background-color: #2d313c;
       color: #fff;
       border: 1px solid #444;
@@ -92,9 +104,44 @@
       margin: 30px auto;
       display: none;
     }
+
+    /* Styles for tooltips */
+    [data-tooltip] {
+      position: relative;
+      cursor: help;
+    }
+    [data-tooltip]::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      bottom: 120%;
+      left: 50%;
+      transform: translateX(-50%);
+      min-width: 250px;
+      max-width: 350px;
+      padding: 8px;
+      background: #2d313c;
+      color: #ffffff;
+      border-radius: 4px;
+      text-align: center;
+      font-size: 0.9em;
+      line-height: 1.4;
+      visibility: hidden;
+      opacity: 0;
+      transition: opacity 0.3s;
+      z-index: 10;
+    }
+    [data-tooltip]:hover::after {
+      visibility: visible;
+      opacity: 1;
+    }
+    .graph-info {
+        text-align: center;
+        margin-bottom: 10px;
+        color: #ddd;
+        display: none;
+    }
   </style>
 
-  <!-- JS -->
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
   <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
   <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
@@ -105,11 +152,10 @@
 
   <div class="input-section">
     <input type="text" id="protein_name" placeholder="Enter protein ID" />
-    <button id="submitBtn">Submit</button>
-    <button id="pieBtn">Create Pie Plot</button>
+    <button id="submitBtn" data-tooltip="This will generate a bar chart showing the landscape of different modifications for a specific protein. Requires a valid UniProt ID.">Submit</button>
+    <button id="pieBtn" data-tooltip="This will generate a pie chart showing the percentage of each modification type across all proteins. No input is needed for this plot.">Create Pie Plot</button>
   </div>
 
-  <!-- Summary statistics -->
   <table class="summary-table">
     <tr>
       <th>Total Proteins</th>
@@ -123,14 +169,20 @@
     </tr>
   </table>
 
-  <!-- Main data table -->
   <div class="table-container">
     {{ stats_table|safe }}
   </div>
 
-  <!-- Graph containers -->
-  <div id="chart"></div>
-  <div id="pieChart"></div>
+  <div id="chart-section">
+      <p class="graph-info" id="chart-info">The bar chart shows the landscape of identified modifications for a specific protein, as well as the peptide coverage of the protein.The y-axis represents the number of spectra confirming the found modification. The x-axis represents the peptide sequence. Color is used to indicate the peptide coverage of the protein.</p>
+      <div id="chart"></div>
+  </div>
+
+  <div id="pie-chart-section">
+      <p class="graph-info" id="pie-chart-info">The pie chart illustrates the distribution of all identified modification types across the entire dataset.</p>
+      <div id="pieChart"></div>
+  </div>
+
 
   <script>
     // DataTables setup
@@ -152,13 +204,11 @@
         }
       });
     });
-
     // Submit protein ID
     document.getElementById("submitBtn").addEventListener("click", () => {
       const proteinId = document.getElementById("protein_name").value;
 
-      if (/^[a-zA-Z0-9]+$/.test(proteinId)) {
-        fetch('/', {
+      fetch('/', {
           method: 'POST',
           body: JSON.stringify({ proteinId: proteinId }),
           headers: {
@@ -169,7 +219,9 @@
         .then(data => {
           if (data.success) {
             const chartDiv = document.getElementById("chart");
+            const chartInfo = document.getElementById("chart-info");
             chartDiv.style.display = "block";
+            chartInfo.style.display = "block";
             Plotly.newPlot('chart', JSON.parse(data.graphJSON), {
               paper_bgcolor: '#1c1f26',
               plot_bgcolor: '#1c1f26',
@@ -191,15 +243,15 @@
         .catch(() => {
           alert("Server error.");
         });
-      } else {
-        alert("Please enter a valid protein ID.");
-      }
     });
 
     // Render pie chart
     document.getElementById("pieBtn").addEventListener("click", () => {
       const pie = {{ pie_json | safe }};
-      document.getElementById("pieChart").style.display = "block";
+      const pieChartDiv = document.getElementById("pieChart");
+      const pieChartInfo = document.getElementById("pie-chart-info");
+      pieChartDiv.style.display = "block";
+      pieChartInfo.style.display = "block";
       Plotly.newPlot('pieChart', pie.data, {
         ...pie.layout,
         paper_bgcolor: '#1c1f26',

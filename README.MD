@@ -1,167 +1,117 @@
+# OpenPtmFinder
+OpenPtmFinder is a powerful tool designed for the comprehensive analysis of post-translational modifications (PTMs) in tandem mass spectrometry-based proteomics data. It utilizes an open search strategy to accurately identify, annotate, and perform differential expression analysis of modifications, presenting the results in an interactive web application.
 
+## 🚀 Key Features
+🔍 **Open Search:** Identifies peptides with modifications based on mass shifts obtained from the results of an AA_stat open search.
+📚 **Unimod Integration:** Annotates found modifications by matching them against the standard Unimod database.
+📊 **Statistical Analysis:** Calculates the differential expression of modifications between specified sample groups.
+🌐 **Interactive Web Application:** Presents all results, including statistics and visualizations, in a user-friendly local web interface.
+🧪 **TMT Support:** Includes normalization and statistical analysis for TMT-labeled data.
 
-OpenPtmFinder
-==============
-PTM Annotation Tool Based on Open strategy search in proteomics
+## 💻 Installation
+OpenPtmFinder requires Python 3.7 or newer. It is recommended to install it in a separate virtual environment.
 
-# Overview
+### Using pip
+You can install the package directly from PyPI (if published) or from the GitHub repository.
 
-**OpenPtmFinder** is a tool for shotgun labled proteomics for annotated peptide post-translation modifications, 
-in the results of open strategy analysis.
-**A.** The program searches for peptides with a given modification type in all spectra based on mass shifts from the results of the open AA_stat search. 
-**B.** The program selects post-translational modifications based on the Unimod database and calculates the position of the modification on the protein.
-**C.** The program calculates the differential expression of the modifications found between the two groups.
-**D.** At the output, you get a local web application with calculated statistics and graphs.
+```bash
+# Recommended: Create and activate a virtual environment
+python -m venv openptm_env
+source openptm_env/bin/activate  # For Windows use: openptm_env\Scripts\activate
 
-
-The program includes search and normalization of different TMT tags, group-specific filtering of peptides based on FDR, and validation of modifications based on DeepLC predictions.
-
-
-## How to cite
-
-A preprint of this article is available on biorXiv: ...
-
-
-## Installation
-
-OpenPtmFinder requires Python 3.7 or newer. You can create microenvironments for the program to run.
-```
-pyenv virtualenv 3.10 OpenPtmFinder
-```
-Install from PyPI (all platforms):
-
-```
+# Install from PyPI
 pip install OpenPtmFinder
+
+# Alternatively, install directly from GitHub
+pip install git+[https://github.com/Anchovy-bio/OpenPtmFinder.git](https://github.com/Anchovy-bio/OpenPtmFinder.git)
 ```
 
-Alternatively, you can install directly from GitHub:
+## ⚡ Quick Start Guide
+1. **Clone the repository:**
+   ```bash
+   git clone [https://github.com/Anchovy-bio/OpenPtmFinder.git](https://github.com/Anchovy-bio/OpenPtmFinder.git)
+   cd OpenPtmFinder
+   ```
+2. **Configure `config.ini`:**
+   Edit the `config.ini` file to specify the paths to your input data and to set up analysis parameters.
+   ```ini
+   # Example config.ini
+   [PATHS]
+   protein_db = /path/to/your/db.fasta
+   unimod_db = /path/to/your/unimod_tables.xml
+   grouping_file = /path/to/your/group_df.csv
+   # ... and so on
 
-```
-pip install git+https://github.com/Anchovy-bio/OpenPtmFinder
-```
+   [PARAMETERS]
+   type_of_modifications = Phospho,Deamidation
+   # ... other parameters
+   ```
+3. **Run the application:**
+   Execute the main script from your terminal. The `-c` flag points to your `config.ini` file.
+   ```bash
+   OpenPtmFinder -c config.ini --run_server
+   ```
+   The program will process the data, perform statistical analysis, and then automatically launch a local web server.
 
+## ⚙️ Configuration Parameters (config.ini)
+The behavior of OpenPtmFinder is controlled by the `config.ini` file.
 
-## Quickstart
+### [PATHS] Section
+| Parameter | Description |
+| :--- | :--- |
+| `protein_db` | **Required.** Path to the FASTA database file with protein sequences. |
+| `unimod_db` | **Required.** Path to the UniMod XML file (`unimod_tables.xml`) for modification annotation. |
+| `grouping_file` | **Required.** Path to the CSV file defining sample groups for statistical analysis. |
+| `aa-stat_dir` | **Required.** Directory containing the results of your AA_stat search. |
+| `mzml_dir` | **Required.** Directory with the source `.mzML` files for intensity extraction. |
+| `pepxml_dir` | **Required.** Directory with the `.pepXML` files from your open search. |
+| `output_dir` | **Required.** Directory where all output files and results will be saved. |
 
-### Command line
+### [PARAMETERS] Section
+| Parameter | Description |
+| :--- | :--- |
+| `type_of_modifications`| A comma-separated list of modification names to search for (e.g., `Phospho, Oxidation`). |
+| `name_of_modifications`| Deprecated. Use `type_of_modifications` for clarity. |
+| `localization_score_threshold` | The minimum score for reliable localization of a modification site (e.g., `0.3`). |
+| `mass_tolerance` | The mass error tolerance for matching peptides (e.g., `0.012`). |
+| `fdr_threshold` | The False Discovery Rate (FDR) threshold for filtering peptides (e.g., `0.05`). |
+| `type_tmt` | Specifies the type of TMT label (e.g., `TMT10plex`, `TMT11plex`). |
+| `min_group_for_stats`| The minimum number of samples in a group to perform statistical tests (e.g., `5`). |
+| `calculation_pval` | `True` or `False`. Set to `True` to enable p-value calculation. |
+| `sorting_pepxml` | `True` or `False`. Set to `True` to enable sorting of `pepXML` files. |
+| `nproc` | The number of processors for parallel processing. |
+| `port` | The port number for the local web server (e.g., `10005`). |
 
-For OpenPtmFinder to work, the results of an open search after running the MSFragger and AA_stat programs are required.
-Input data includes directories of raw .mzML, .csv files from AA_stat, processed pepXML files. 
-In its simplest form, the program searches for the above files in the working directory, and uses the default parameters from the standard config file, the protein base from Uniprot from 2022, and the Unimod base from 2025.
-You can go to the directory with the above files and run OpenPtmFinder with the following command with the run-server flag to create a web page of results.
-```
-OpenPtmFinder --run-server
-```
-To calculate differential expression, you must specify a file with annotation of tags and images for two groups in the config file:
-```
-OpenPtmFinder --config ./config.ini --run-server
-```
-or command line options:
-```
-OpenPtmFinder --grouping_file ./groups.csv --output_dir ./results --run-server
-```
+## 📊 How it works: Workflow
+1.  **Input Data:** The program reads raw data from the `mzml`, `pepxml`, and `aa-stat` directories you specify.
+2.  **Peptide Processing:** Filters peptides based on FDR, localization scores, and specified modification types.
+3.  **Intensity Extraction:** Quantifies TMT reporter ion intensities from the `.mzml` files.
+4.  **Data Normalization:** Normalizes TMT intensities across all samples to correct for technical variations.
+5.  **Statistical Analysis:** Compares modification levels between groups and calculates statistical significance (p-values).
+6.  **Web Server Generation:** Compiles the results into a dynamic, interactive web application for data analysis.
 
+## 📁 Output Files
+The results are saved in the directory specified by `output_dir` in the `config.ini` file. Key output files include:
 
-### Open search results and spectrum files
+- `final_stat_result.csv`: A CSV file containing all peptides, their modifications, normalized intensities, statistical results (p-values, fold change), and protein information. This is the main output file.
+- `filtered_df_with_intens.csv`: An intermediate file containing filtered peptides with extracted TMT intensities before normalization and statistical analysis.
+- `unimod_search.csv`: 
+- `unimod.csv`: 
+- `cataloque.csv`: 
+- `pepxml_psms.csv`: 
+- `annotated_df.pickle`: 
 
-AA_stat deals with open search results in pepXML or CSV formats and is compatible with the search results obtained using
-most existing search engines.
-By default, it is recommended to use MSFragger search engine,
-available from [Nesvizhskii lab](http://www.nesvilab.org/software.html) website.
-For details of its operation, see
-[MSFragger User manual](https://media.nature.com/original/nature-assets/nmeth/journal/v14/n5/extref/nmeth.4256-S2.pdf).
+## 🖼️ Visualizations
+The web application provides interactive plots to visualize your data:
 
-Most new features of AA_stat require that you also provide spectrum files. AA_stat supports MGF and mzML formats.
-Note that you must provide the same files that are used for open search. **Note: If you run MSFragger on RAW files,
-you can convert RAW files to mzML and specify those for AA_stat.**
+-   **Bar Chart:** Shows the landscape of found modifications for a specific protein, as well as the protein coverage by peptides.
+-   **Pie Chart:** Illustrates the distribution of all identified modification types across the entire dataset.
 
+## 🤝 Contribution and Support
+We welcome your contributions to the project. Please feel free to open issues or submit pull requests.
 
-### Examples
+## 📝 License
+This project is distributed under the MIT License. See the `LICENSE` file for details.
 
-An example of the open search parameters file can be found in the repository [here](OpenPtmFinder/config.ini).
-
-Example of MSFragger usage:
-
-```
-java -Xmx8G -jar MSFragger.jar open_search.params HeLa_run1.mzML HeLa_run2.mzML
-```
-
-Example of using AA_stat:
-
-```
-AA_stat --pepxml *.pepXML --mzml *.mzML
-```
-
-# User manual
-
-### Command line options
-
-```
-usage: OpenPtmFinder [-h] [--config CONFIG] [--output_dir OUTPUT_DIR] [--pepxml_dir PEPXML_DIR [PEPXML_DIR ...]] [--mzml_dir MZML_DIR] [--AAstat_dir AASTAT_DIR]
-                     [--protein_db PROTEIN_DB] [--unimod_db UNIMOD_DB] [--grouping_file GROUPING_FILE] [--run-server] [-n PROCESSES]
-                     [--verbosity {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
-
-PTM Annotation Tool Based on Open strategy search
-
-options:
-  -h, --help            show this help message and exit
-  --config CONFIG       .ini file with parameters. If there is no file, OpenPtmFinder uses default one.
-  --output_dir OUTPUT_DIR
-                        Directory to store the results. Default value is current directory.
-  --pepxml_dir PEPXML_DIR [PEPXML_DIR ...]
-                        Directory with pepxml search files or separate files. Default value is current directory.
-  --mzml_dir MZML_DIR   Directory with mzml search files. Default value is current directory.
-  --AAstat_dir AASTAT_DIR
-                        Directory with AA_stat search results (.csv and interpretations.json). Default value is current directory.
-  --protein_db PROTEIN_DB
-                        Directory with .fasta file with proteins. If there is no file, OpenPtmFinder uses default one.
-  --unimod_db UNIMOD_DB
-                        Directory with .xml UNIMOD database. 
-                        An example can be found at https://github.com/Anchovy-bio/OpenPtmFinder/tree/main/data/unimod
-  --grouping_file GROUPING_FILE
-                        Directory with annotation file of samples by TMT groups. 
-                        An example can be found at https://github.com/Anchovy-bio/OpenPtmFinder/blob/main/config.ini
-  --run-server          Start web server after processing
-  -n PROCESSES, --processes PROCESSES
-                        Maximum number of processes to use.
-  --verbosity {DEBUG,INFO,WARNING,ERROR,CRITICAL}
-                        Logging verbosity level
-```
-### Configuration file
-
-Configuration parameters can be set in a **config** file (default values and comments are in [config.ini](OpenPtmFinder/config.ini)).
-
-OpenPtmFinder supports the following parameters:
-
-
-| Name                             | Default value                            | Description                                                                |
-| ---------------------------------|------------------------------------------|----------------------------------------------------------------------------|
-|                                  | **[PATH]**                               |                                                                            |
-| protein_db                       |  ./data                                  | Path to .fasta file with proteins. If there is no file, OpenPtmFinder uses default one (SwitssProt 2022). |
-| unimod_db                        |                                          | Directory with .xml UNIMOD database. An example can be found at https://github.com/Anchovy-bio/OpenPtmFinder/tree/main/data/unimod |
-| grouping_file                    |                                          | Directory with annotation file of samples by two groups. An example can be found at https://github.com/Anchovy-bio/OpenPtmFinder/blob/main/config.ini |
-| aa-stat_dir                      |                                          | Directory with AA_stat search results (.csv and interpretations.json). Default value is current directory. |
-| mzml_dir                         |                                          | Directory with mzml search files. Default value is pepxml directory. |
-| pepxml_dir                       |                                          | Directory with pepxml search files or separate files. Default value is current directory. |
-| output_dir                       |                                          | Directory to store the results. Default value is current directory. |
-|                                  | **[PARAMETERS]**                         |                                                                            |
-| delimiter                        | , (comma)                                | Delimiter used in CSV input files.                                         |
-| type_of_modifications            | 2                                        | Type of modification based on Unimod accsecions.                                           |
-| name_of_modifications            | Phospho, Oxidation                                  | Modification types for searching by Unimod.                                        |
-| localization_score_threshold     | 0.3                                      | Selection of peptides based on the reliability of modification localization.                                           |
-| mass_tolerance                   | 0.012                                    | Peptide mass error.                                        |
-| fdr_threshold                    | 0.05                                     | Error rate in peptide filtering.                                           |
-| type_tmt                         | TMT11plex                                | Design of the TMT experiment.                                         |
-| min_group_for_stats              | 5                                        | Minimum amount of data to calculate statistics by group.                                           |
-| calculation_pval                 | True                                     | To calculate statistics or not.                                         |
-| sorting_pepxml                   | True                                     | Sort files or not.                                           |
-
-
-### Output files
-
-An example of OpenPtmFinder output can be found [here](OpenPtmFinder/output/).
-
-OpenPtmFinder produces the following files:
-
-**A.** 
-
+## 📖 How to Cite
+The preprint of this article is available on biorXiv: ...
