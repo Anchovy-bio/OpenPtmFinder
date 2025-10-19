@@ -36,7 +36,10 @@ setup(
         "pyteomics",
         "plotly",
         "statsmodels",
-        "flask"
+        "flask",
+        "tqdm",
+        "pyvis"
+        
     ],
     entry_points = {"console_scripts": ["OpenPtmFinder=openptmfinder.main:main"]},
     include_package_data = True,
@@ -45,7 +48,7 @@ setup(
     classifiers = ['Intended Audience :: Science/Research',
                    'Programming Language :: Python :: 3',
                    'Topic :: Scientific/Engineering :: Bio-Informatics',
-                   'Topic :: Scientific/Engineering :: Chemistry',
-                   'Topic :: Scientific/Engineering :: Physics'],
+                   'Topic :: Scientific/Engineering :: Proteomics',
+                   'Topic :: Scientific/Engineering :: Mass spectrometry'],
 )
 

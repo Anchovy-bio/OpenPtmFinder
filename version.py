@@ -3,7 +3,7 @@ try:
 except ImportError:
     from pyteomics.version import _VersionInfo as VersionInfo
 
-__version__ = '1.0'
+__version__ = '2.0'
 
 version_info = VersionInfo(__version__)
 version = __version__

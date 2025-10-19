@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.colors as pc
 import plotly
-import random
 import json
 import numpy as np
 import random
@@ -11,47 +10,96 @@ import re
 import plotly.utils
 import os
 from ast import literal_eval
+from pyteomics import fasta
 
 template_dir = os.path.join(os.path.dirname(__file__), 'templates')
 app = Flask(__name__, template_folder=template_dir)
 output = os.environ.get('OUTPUT_DIR', '')
-port_n=os.environ.get('port_n', '')
+port_n = os.environ.get('port_n', '')
+fasta_file = os.environ.get('fasta', '')
 full_df = pd.read_pickle(os.path.join(output, 'annotated_df.pickle'))
 diff_resuls=pd.read_csv(os.path.join(output,'final_stat_result.csv'))
+pr=[]
+se=[]
+try:
+    with fasta.read(fasta_file) as db:
+        for descr, seq in db:
+            pr.append(descr)
+            se.append(seq)
+except FileNotFoundError:
+    logger.error(f"FASTA file not found at {fasta_file}. Skipping FASTA concat.")
+
+fasta_df=pd.DataFrame()
+fasta_df['protein']=pr
+fasta_df['sequence']=se
+fasta_df['id_prot']=fasta_df['protein'].str.split('|').str[1]
+
 
 @app.route("/")
 def index():
     chart_df=full_df[full_df['position_in_protein'].notna()]
+    chart_df = chart_df[chart_df['Modification'] != 'reference']
     chart_df=chart_df.drop_duplicates(subset=['position_in_protein','id_prot','Modification'])
-    chart_df['Mods']=chart_df['Modification'].apply(lambda x: x.split('@')[0])
-    pie_labels=chart_df['Mods'].value_counts().keys()
-    pie_values=chart_df['Mods'].value_counts().values
-    if len(pie_labels)==1:
-        pie_labels=list(pie_labels)
-        pie_values=list(pie_values)
+    chart_df['Mods']=chart_df['Modification'].str.split('@').str[0]
+    mods_count = chart_df['Mods'].value_counts()
+    top_mods = mods_count.head(8)
+    other_mods = mods_count.iloc[8:]
+
+    pie_labels = list(top_mods.index)
+    pie_values = list(top_mods.values)
+
+    if not other_mods.empty:
+        pie_labels.append("Other")
+        pie_values.append(other_mods.sum())
+
+    pie_labels_bold = [f"<b>{label}</b>" for label in pie_labels]
 
     fig_pie = go.Figure(data=[go.Pie(
-        labels=pie_labels,
-        values=pie_values.tolist(),
+        labels=pie_labels_bold,
+        values=pie_values,
         hole=0.4,
         marker=dict(line=dict(color='#000000', width=2)),
-        textinfo='label+percent',
+        textinfo='label+value+percent',
+        texttemplate = "%{label}: %{value:s} <br>(%{percent})",
         insidetextorientation='radial'
     )])
+
+    # Текстовый блок со списком "Other"
+    other_text = ""
+    if not other_mods.empty:
+        mods_list = list(other_mods.index)
+        chunks = [", ".join(mods_list[i:i+10]) for i in range(0, len(mods_list), 10)]
+        other_text = "Other includes:<br>" + "<br>".join(chunks)
+
     fig_pie.update_layout(
-        #title='Number of modification sites found in filtered mass-spectra',
+        title='Number of modification sites found in filtered mass-spectra',
         title_x=0.5,
         font=dict(family="Khula, sans-serif", size=16, color="black"),
         paper_bgcolor='white',
-        height=700
+        height=800,
+        margin=dict(t=100, b=200),
+        annotations=[
+            dict(
+                text=other_text,
+                showarrow=False,
+                x=0.5,
+                y=-0.25,
+                xref="paper",
+                yref="paper",
+                font=dict(size=14, color="black"),
+                align="center"
+            )
+        ]
     )
+    path_fig=os.path.join(output, f'pie_plot.html')
+    fig_pie.write_html(path_fig)
     pie_json = json.dumps(fig_pie, cls=plotly.utils.PlotlyJSONEncoder)
     
-    group1=diff_resuls['intensity_TMT_group1'].apply(lambda x: str(len(x.split(','))))
-    group2=diff_resuls['intensity_TMT_group2'].apply(lambda x: str(len(x.split(','))))
-    diff_resuls['number of samples group1/group2']=group1+'/'+group2
-    diff_resuls['number of spectra']=diff_resuls['spectrum_x'].apply(lambda x: x.count('banner'))
-    columns=['id_prot','position_in_protein','Modification','number of samples group1/group2','number of spectra','pvalue_correct']
+    group1=diff_resuls['intensity_TMT_group1'].str.split(',').str.len()
+    group2=diff_resuls['intensity_TMT_group2'].str.split(',').str.len()
+    diff_resuls['number of samples\n group1/group2'] = group1.astype(str) + '/' + group2.astype(str)
+    diff_resuls['number of spectra']=diff_resuls['spectrum_y'].str.split(',').str.len()
+    columns=['id_prot','position_in_protein','Modification','number of samples\n group1/group2','number of spectra','stoich1_median','stoich2_median','FC_coef','FC_median_abs','T_test_p_value_coef','pvalue_Ttest_correct']
     stats_table_html = diff_resuls[columns].to_html(index=False, classes='centered-table', table_id="modTable")
     protein_count = diff_resuls['id_prot'].nunique()
     modsite_count = diff_resuls['position_in_protein'].nunique()
@@ -75,7 +123,10 @@ def get_protein_plot():
     if full_df.empty:
         return jsonify({'success': False, 'error': 'Dataframe is empty.'})
     
-    df_local = full_df[(full_df['id_prot'] == protein)]
+    df_local = full_df[(full_df['id_prot'] == protein)].drop_duplicates(
+        subset=['spectrum_y','position_in_protein','peptide_y','Modification']
+    )
+    
     if df_local.empty:
         return jsonify({'success': False, 'error': 'Data for the specified protein was not found. Please check that the entered ID is correct.'})
 
@@ -104,14 +155,20 @@ def get_protein_plot():
             densities.append(density)
 
         return pd.DataFrame({'Position': positions, 'Density': densities})
-
-    density_df = peptide_density_distribution(df_local.iloc[0]['sequence'], df_local['peptide'].tolist())
-    df=df_local[df_local['position_in_protein'].notna()]
-    df=df.groupby(['Modification','position_in_protein']).agg(list).reset_index()
-    df['count']=[len(x) for x in df.spectrum_x]
+    
+    seq = fasta_df.loc[fasta_df['id_prot'] == protein, 'sequence'].iloc[0]
+    density_df = peptide_density_distribution(
+        seq, df_local['peptide_y'].tolist()
+    )
+    df = df_local[df_local['position_in_protein'].notna()]
+    df = df[df['Modification']!='reference']
+    df = df.groupby(['Modification','position_in_protein']).agg(list).reset_index()
+    df['count'] = [len(x) for x in df.spectrum_y]
 
     # Получаем список уникальных модификаций
-    unique_mods = df.Modification.unique()
+    df['Mods'] = df['Modification'].apply(lambda x: x.split('@')[0])
+    df = df[df['Mods']!='Sulfation']
+    unique_mods = df['Mods'].unique()
     no_of_colors = len(unique_mods)
 
     # Выбираем палитру (повторяем, если не хватает цветов)
@@ -120,13 +177,14 @@ def get_protein_plot():
 
     # Создаем отображение "модификация → цвет"
     mod_to_color = dict(zip(unique_mods, colors))
-    df['color'] = df['Modification'].map(mod_to_color)
+    df['color'] = df['Mods'].map(mod_to_color)
+    print(mod_to_color)
 
     # Создание графика
     fig = go.Figure()
 
     for modification in unique_mods:
-        subset = df[df['Modification'] == modification]
+        subset = df[df['Mods'] == modification]
 
         # Точки
         fig.add_trace(go.Scatter(
@@ -151,7 +209,7 @@ def get_protein_plot():
                 y=[0, subset['count'][line]],
                 mode='lines',
                 line=dict(color=mod_to_color[modification], width=1),
-                name=modification,
+                name=f"{modification}_line",
                 legendgroup=modification,
                 showlegend=False,
                 hoverinfo="skip"
@@ -162,7 +220,7 @@ def get_protein_plot():
     ymax = df['count'].max()    
 
     # Прямоугольники для плотности покрытия
-    amino_acids = list(df_local.iloc[0]['sequence'])
+    amino_acids = list(seq)
     heights = density_df['Density'].tolist()
     bottom = np.arange(len(amino_acids)) + 0.5
 
@@ -199,7 +257,7 @@ def get_protein_plot():
     # Единое оформление
     fig.update_layout(
         title=dict(
-            text=f"<b>{protein}</b>",
+            #text=f"<b>{protein}</b>",
             x=0.95,
             font=dict(family="Arial", size=20, color="black")
         ),
@@ -234,6 +292,8 @@ def get_protein_plot():
         margin=dict(t=20, b=60, l=80, r=100)
     )
     fig.update_layout(xaxis_autorange=True, yaxis_autorange=True)
+    path_fig=os.path.join(output, f'{protein}.html')
+    fig.write_html(path_fig)
 
     graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
     return jsonify({'success': True, 'graphJSON': graphJSON})
