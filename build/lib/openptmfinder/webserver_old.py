@@ -5,63 +5,46 @@ import plotly.colors as pc
 import plotly
 import json
 import numpy as np
+import random
+import re
+import plotly.utils
 import os
-import glob
+from ast import literal_eval
 from pyteomics import fasta
-import logging
-
-logger = logging.getLogger(__name__)
 
 template_dir = os.path.join(os.path.dirname(__file__), 'templates')
 app = Flask(__name__, template_folder=template_dir)
-
 output = os.environ.get('OUTPUT_DIR', '')
-port_n = os.environ.get('port_n', 5000)
+port_n = os.environ.get('port_n', '')
 fasta_file = os.environ.get('fasta', '')
-
-# ===== LOAD DATA =====
 full_df = pd.read_pickle(os.path.join(output, 'annotated_df.pickle'))
-
-files_diff = glob.glob(os.path.join(output, 'final_stat_result_aggregate*.csv'))
-
+files_diff= glob.glob(os.path.join(output,'final_stat_result_aggregate_*.csv'))
 diff_resuls = pd.DataFrame()
 for file in files_diff:
-    df = pd.read_csv(file)
-    diff_resuls = pd.concat([diff_resuls, df], ignore_index=True)
-
-# ===== FASTA =====
-pr, se = [], []
+    diff_resuls = pd.concat([diff_resuls,file], ignore_index=True)
+pr=[]
+se=[]
 try:
     with fasta.read(fasta_file) as db:
         for descr, seq in db:
             pr.append(descr)
             se.append(seq)
 except FileNotFoundError:
-    logger.warning("FASTA not found")
+    logger.error(f"FASTA file not found at {fasta_file}. Skipping FASTA concat.")
 
-fasta_df = pd.DataFrame({
-    'protein': pr,
-    'sequence': se
-})
-fasta_df['id_prot'] = fasta_df['protein'].str.split('|').str[1]
+fasta_df=pd.DataFrame()
+fasta_df['protein']=pr
+fasta_df['sequence']=se
+fasta_df['id_prot']=fasta_df['protein'].str.split('|').str[1]
 
-# ===== MAIN PAGE =====
+
 @app.route("/")
 def index():
-
-    chart_df = full_df.dropna(subset=['position_in_protein'])
+    chart_df=full_df[full_df['position_in_protein'].notna()]
     chart_df = chart_df[chart_df['Modification'] != 'reference']
-    chart_df = chart_df.drop_duplicates(
-        subset=['position_in_protein', 'id_prot', 'Modification']
-    )
-
-    chart_df['Mods'] = chart_df['Modification'].apply(
-        lambda x: x.split('@')[0] if '@' in x else x
-    )
-
+    chart_df=chart_df.drop_duplicates(subset=['position_in_protein','id_prot','Modification'])
+    chart_df['Mods']=chart_df['Modification'].str.split('@').str[0]
     mods_count = chart_df['Mods'].value_counts()
-
-    # TOP MODS
     top_mods = mods_count.head(8)
     other_mods = mods_count.iloc[8:]
 
@@ -72,43 +55,68 @@ def index():
         pie_labels.append("Other")
         pie_values.append(other_mods.sum())
 
+    pie_labels_bold = [f"<b>{label}</b>" for label in pie_labels]
+
     fig_pie = go.Figure(data=[go.Pie(
-        labels=pie_labels,
+        labels=pie_labels_bold,
         values=pie_values,
-        hole=0.4
+        hole=0.4,
+        marker=dict(line=dict(color='#000000', width=2)),
+        textinfo='label+value+percent',
+        texttemplate = "%{label}: %{value:s} <br>(%{percent})",
+        insidetextorientation='radial'
     )])
 
-    pie_json = json.dumps(fig_pie, cls=plotly.utils.PlotlyJSONEncoder)
+    # Текстовый блок со списком "Other"
+    other_text = ""
+    if not other_mods.empty:
+        mods_list = list(other_mods.index)
+        chunks = [", ".join(mods_list[i:i+10]) for i in range(0, len(mods_list), 10)]
+        other_text = "Other includes:<br>" + "<br>".join(chunks)
 
-    # TABLE
-    diff_resuls['Mods'] = diff_resuls['site'].str.split('_').str[0]
-    
-    columns = [
-        'site','Mods','logFC', 'adj.P.Val','contrast','n_obs', 'rank'
-    ]
-
-    stats_table_html = diff_resuls[columns].dropna(subset=['logFC', 'adj.P.Val']).to_html(
-        index=False,
-        classes='centered-table',
-        table_id="modTable"
+    fig_pie.update_layout(
+        title='Number of modification sites found in filtered mass-spectra',
+        title_x=0.5,
+        font=dict(family="Khula, sans-serif", size=16, color="black"),
+        paper_bgcolor='white',
+        height=800,
+        margin=dict(t=100, b=200),
+        annotations=[
+            dict(
+                text=other_text,
+                showarrow=False,
+                x=0.5,
+                y=-0.25,
+                xref="paper",
+                yref="paper",
+                font=dict(size=14, color="black"),
+                align="center"
+            )
+        ]
     )
-
-    mods_list = sorted(diff_resuls['Mods'].dropna().unique().tolist())
-    protein_count = diff_resuls['site'].str.split('_').str[1].nunique()
-    modsite_count = diff_resuls['site'].nunique()
-    modtype_count = diff_resuls['Mods'].nunique()
+    path_fig=os.path.join(output, f'pie_plot.html')
+    fig_pie.write_html(path_fig)
+    pie_json = json.dumps(fig_pie, cls=plotly.utils.PlotlyJSONEncoder)
+    
+    group1=diff_resuls['intensity_TMT_group1'].str.split(',').str.len()
+    group2=diff_resuls['intensity_TMT_group2'].str.split(',').str.len()
+    diff_resuls['number of samples\n group1/group2'] = group1.astype(str) + '/' + group2.astype(str)
+    diff_resuls['number of spectra']=diff_resuls['spectrum_y'].str.split(',').str.len()
+    columns=['id_prot','position_in_protein','Modification','number of samples\n group1/group2','number of spectra','stoich1_median','stoich2_median','FC_coef','FC_median_abs','T_test_p_value_coef','pvalue_Ttest_correct']
+    stats_table_html = diff_resuls[columns].to_html(index=False, classes='centered-table', table_id="modTable")
+    protein_count = diff_resuls['id_prot'].nunique()
+    modsite_count = diff_resuls['position_in_protein'].nunique()
+    modtype_count = diff_resuls['Modification'].nunique()
 
     return render_template(
         "index.html",
         stats_table=stats_table_html,
         pie_json=pie_json,
-        mods=mods_list,
         protein_count=protein_count,
         modsite_count=modsite_count,
         modtype_count=modtype_count
     )
 
-# ===== PROTEIN PLOT =====
 @app.route("/", methods=['POST'])
 def get_protein_plot():
     data = request.get_json()
@@ -161,7 +169,8 @@ def get_protein_plot():
     df['count'] = [len(x) for x in df.spectrum_y]
 
     # Получаем список уникальных модификаций
-    df['Mods'] = df['Modification'].apply(lambda x: x.split('@')[0] if '@' in x else x)
+    df['Mods'] = df['Modification'].apply(lambda x: x.split('@')[0])
+    df = df[df['Mods']!='Sulfation']
     unique_mods = df['Mods'].unique()
     no_of_colors = len(unique_mods)
 
@@ -172,6 +181,7 @@ def get_protein_plot():
     # Создаем отображение "модификация → цвет"
     mod_to_color = dict(zip(unique_mods, colors))
     df['color'] = df['Mods'].map(mod_to_color)
+    print(mod_to_color)
 
     # Создание графика
     fig = go.Figure()
@@ -290,64 +300,6 @@ def get_protein_plot():
 
     graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
     return jsonify({'success': True, 'graphJSON': graphJSON})
-
-# ===== VOLCANO =====
-@app.route("/volcano", methods=['POST'])
-def get_volcano():
-    data = request.get_json()
-    mod = data.get('mod', 'ALL')
-    
-    p_thr = float(data.get('p_thr', 0.05))
-    fc_thr = float(data.get('fc_thr', 1.0))
-    print(mod, p_thr, fc_thr)
-    
-    df = diff_resuls.copy()
-    
-    df = df.dropna(subset=['logFC', 'adj.P.Val'])
-    
-    if df.empty:
-        return jsonify({
-            'success': False,
-            'error': 'No data available for selected parameters'
-        })
-    
-    df['Mods'] = df['site'].str.split('_').str[0]
-    df['p_value'] = -np.log10(df['adj.P.Val'])
-
-
-    if mod != "ALL":
-        df = df[df['Mods'] == mod]
-
-    p_high = -np.log10(p_thr)
-
-    df['significant'] = (
-        (np.abs(df['logFC']) >= fc_thr) &
-        (df['p_value'] >= p_high)
-    )
-    print(df.head())
-    print(len(df))
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=df['logFC'],
-        y=df['p_value'],
-        mode='markers',
-        marker=dict(
-            color=df['significant'].map({True: 'red', False: 'grey'}),
-            size=8
-        )
-        #customdata=df[['site']].fillna('NA').values,
-        #hovertemplate="Protein: %{customdata[0]}<br>FC: %{x}<br>p: %{y}<extra></extra>"
-    ))
-
-    fig.add_hline(y=p_high)
-    fig.add_vline(x=fc_thr)
-    fig.add_vline(x=-fc_thr)
-
-    return jsonify({
-        'success': True,
-        'graphJSON': json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
-    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(port_n), debug=True, use_reloader=False)

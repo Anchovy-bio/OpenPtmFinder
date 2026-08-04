@@ -37,7 +37,6 @@ from .functions import (
     spectra_merge,
     map_mod_position
 )
-from .sage_preprocessing import prepare_sage_phospho
 from .dbconnect import (
     get_protein_info_from_signor,
     fetch_iptmnet_data,
@@ -102,7 +101,6 @@ def parse_command():
     parser.add_argument('-d','--protein_db', help='Directory with .fasta file with proteins. If there is no file, OpenPtmFinder uses default one.')
     parser.add_argument('-u','--unimod_db', help='Directory with .xml UNIMOD database. If there is no file, OpenPtmFinder uses default one (version from 2025).')
     parser.add_argument('-g','--grouping_file', help='Directory with annotation file of samples by TMT groups. An example can be found at https://github.com/Anchovy-bio/OpenPtmFinder/')
-    parser.add_argument('-s','--sage_dir', help='Directory with Sage result folders (each containing results.sage.tsv and tmt.tsv) or a single Sage result folder. Used when search_engine=sage.')
 
     parser.add_argument('--run_server', action='store_true', help='Start web server after processing', default=False)
     parser.add_argument('--recalc_results', action='store_true', help='Recalculate results', default=False)
@@ -124,12 +122,11 @@ def get_final_paths(args, config):
 
     return {
         'output_dir': args.output_dir or cfg('PATHS', 'output_dir', fallback=os.getcwd()),
-        'pepxml_dir': args.pepxml or (cfg('PATHS', 'pepxml_dir', fallback='') or '').split(),
-        'sage_dir': args.sage_dir or cfg('PATHS', 'sage_dir', fallback=None),
-        'mzml_dir': args.mzml or cfg('PATHS', 'mzml_dir', fallback=None),
-        'aa_stat_dir': args.AAstat_dir or cfg('PATHS', 'aa-stat_dir', fallback=None),
+        'pepxml_dir': args.pepxml or cfg('PATHS', 'pepxml_dir').split(),
+        'mzml_dir': args.mzml or cfg('PATHS', 'mzml_dir'),
+        'aa_stat_dir': args.AAstat_dir or cfg('PATHS', 'aa-stat_dir'),
         'protein_db': args.protein_db or cfg('PATHS', 'protein_db'),
-        'unimod_db': args.unimod_db or cfg('PATHS', 'unimod_db', fallback=None),
+        'unimod_db': args.unimod_db or cfg('PATHS', 'unimod_db'),
         'grouping_file': args.grouping_file or cfg('PATHS', 'grouping_file'),
         'iptmnet_positions_file': cfg('PATHS', 'iptmnet_positions_file', fallback=None),
         'nproc': args.nproc if args.nproc is not None else cfg('PARAMETERS', 'nproc', fallback=DEFAULT_NPROC),
@@ -175,33 +172,21 @@ def main():
     data_dir = paths['aa_stat_dir']
     mzml_dir = paths['mzml_dir']
     pepxml_dir = paths['pepxml_dir']
-    sage_dir = paths['sage_dir']
     iptmnet_positions_file = paths['iptmnet_positions_file']
 
-    logger.info(f"Paths:\n  - output_dir: {output_dir}\n  - protein_db: {fasta_file}\n  - unimod_db: {xml_file}\n  - grouping_file: {group_df_link}\n  - aa_stat_dir: {data_dir}\n  - mzml_dir: {mzml_dir}\n  - pepxml_dir: {pepxml_dir}\n  - sage_dir: {sage_dir}\n  - iptmnet_positions_file: {iptmnet_positions_file}")
-
-    search_engine = config.get('PARAMETERS', 'search_engine', fallback='msfragger').strip().lower()
-    if search_engine not in {'msfragger', 'sage'}:
-        logger.warning(f"Unknown search_engine={search_engine!r}; falling back to 'msfragger'.")
-        search_engine = 'msfragger'
+    logger.info(f"Paths:\n  - output_dir: {output_dir}\n  - protein_db: {fasta_file}\n  - unimod_db: {xml_file}\n  - grouping_file: {group_df_link}\n  - aa_stat_dir: {data_dir}\n  - mzml_dir: {mzml_dir}\n  - pepxml_dir: {pepxml_dir}\n  - iptmnet_positions_file: {iptmnet_positions_file}")
 
     # Проверка обязательных файлов
-    required_files = {}
-    if search_engine == 'msfragger':
-        required_files['interpretation_file'] = os.path.join(data_dir, 'interpretations.json')
-    else:
-        for name, path in {'grouping_file': group_df_link, 'protein_db': fasta_file, 'sage_dir': sage_dir}.items():
-            if not path or not os.path.exists(path):
-                logger.error(f"Required Sage input {name} not found at {path}. Exiting.")
-                sys.exit(1)
+    required_files = {
+        'interpretation_file': os.path.join(data_dir, 'interpretations.json'),
+    }
     for name, path in required_files.items():
         if not os.path.isfile(path):
             logger.error(f"Required file {name} not found at {path}. Exiting.")
             sys.exit(1)
 
-    if search_engine == 'msfragger':
-        interpretation_file = required_files['interpretation_file']
-        logger.info('File interpretations.json was found.')
+    interpretation_file = required_files['interpretation_file']
+    logger.info('File interpretations.json was found.')
 
     type_of_modification = re.split(r'\s*,\s*', config.get('PARAMETERS', 'type_of_modifications', fallback=''))
     name_of_modification = re.split(r'\s*,\s*', config.get('PARAMETERS', 'name_of_modifications', fallback=''))
@@ -219,10 +204,6 @@ def main():
     # --- параметры статистического модуля (секция [STATISTICS]) ---
     method = config.get('STATISTICS', 'calculating_method', fallback='aggregate')
     type_experiment = config.get('STATISTICS', 'type_experiment', fallback='whole proteome')
-    if search_engine == 'sage' and type_experiment.strip().lower() != 'phospho enrichment':
-        logger.warning("search_engine='sage' is implemented for enriched PTM data without reference PSMs; "
-                       "using type_experiment='phospho enrichment' for normalization and statistics.")
-        type_experiment = 'phospho enrichment'
     min_sites_mod = int(config.get('STATISTICS', 'min_sites_mod', fallback=100))
     min_ref = int(config.get('STATISTICS', 'min_ref', fallback=100))
     min_obs_per_site = float(config.get('STATISTICS', 'min_obs_per_site', fallback=3))
@@ -261,19 +242,6 @@ def main():
     norm_impute_missing = config.getboolean('PARAMETERS', 'norm_impute_missing', fallback=False)
     norm_impute_low = config.getboolean('PARAMETERS', 'norm_impute_low', fallback=False)
 
-    # --- Sage / enriched-PTM preprocessing (used when search_engine='sage') ---
-    sage_results_filename = config.get('PARAMETERS', 'sage_results_filename', fallback='results.sage.tsv')
-    sage_tmt_filename = config.get('PARAMETERS', 'sage_tmt_filename', fallback='tmt.tsv')
-    sage_intensity_prefix = config.get('PARAMETERS', 'sage_intensity_prefix', fallback='tmt_')
-    sage_fdr_method = config.get('PARAMETERS', 'sage_fdr_method', fallback='spectrum_peptide_q')
-    sage_score_column = config.get('PARAMETERS', 'sage_score_column', fallback='sage_discriminant_score')
-    sage_decoy_regex = config.get('PARAMETERS', 'sage_decoy_regex', fallback=r'DECOY|rev_')
-    sage_mod_keep_regex = config.get('PARAMETERS', 'sage_mod_keep_regex', fallback=r'\+79\.')
-    sage_mod_name = config.get('PARAMETERS', 'sage_mod_name', fallback='Phospho')
-    sage_require_mod = config.getboolean('PARAMETERS', 'sage_require_mod', fallback=True)
-    sage_map_all_proteins = config.getboolean('PARAMETERS', 'sage_map_all_proteins', fallback=False)
-    norm_intensity_prefix = sage_intensity_prefix if search_engine == 'sage' else 'intensity_'
-
     stats_kwargs = dict(
         min_group_for_stats=min_group_for_stats,
         method=method,
@@ -297,7 +265,6 @@ def main():
     logger.info(f'PARAMETERS:\n  - type_of_modifications: {type_of_modification}\n  - name_of_modification: {name_of_modification}\n  - localization_score_threshold: {localization_score_threshold}\n  - mass_tolerance: {mass_tolerance}\n  - fdr_threshold: {fdr_threshold}\n  - type_tmt: {type_tmt}\n  - calculation_pval: {calculation_pval}\n  - min_group_for_stats: {min_group_for_stats}\n  - sorting_pepxml: {sorting_pepxml}\n  - port: {port_n}\n  - min_hits_for_fdr_calc: {min_hits_for_fdr_calc}\n  - default_hyperscore_threshold: {default_hyperscore_threshold}\n  - default_expect_threshold: {default_expect_threshold}')
     logger.info(f'STATS PARAMETERS:\n  - calculating_method: {method}\n  - type_experiment: {type_experiment}\n  - min_sites_mod: {min_sites_mod}\n  - min_ref: {min_ref}\n  - min_obs_per_site: {min_obs_per_site}\n  - min_pairs_for_stoich: {min_pairs_for_stoich}\n  - min_sites_for_common: {min_sites_for_common}\n  - min_sites_eb: {min_sites_eb}\n  - icc_mode: {icc_mode}\n  - fixed_icc: {fixed_icc}\n  - huber_c: {huber_c}\n  - huber_iters: {huber_iters}\n  - var_floor_pct: {var_floor_pct}\n  - eb_d0_floor: {eb_d0_floor}\n  - eb_d0_ceil: {eb_d0_ceil}\n  - exclude_modifications: {exclude_modifications}\n  - modification_aliases: {modification_aliases!r}\n  - run_permutation: {run_permutation}\n  - n_perm: {n_perm}\n  - perm_alpha: {perm_alpha}\n  - perm_logfc_thresh: {perm_logfc_thresh}\n  - perm_exact_threshold: {perm_exact_threshold}\n  - perm_seed: {perm_seed}')
     logger.info(f'NORMALIZATION PARAMETERS:\n  - norm_target: {norm_target}\n  - norm_min_fraction_valid: {norm_min_fraction_valid}\n  - norm_use_gis_for_batch: {norm_use_gis_for_batch}\n  - norm_max_missing_fraction: {norm_max_missing_fraction}\n  - norm_impute_missing: {norm_impute_missing}\n  - norm_impute_low: {norm_impute_low}')
-    logger.info(f'INPUT/PREPROCESSING:\n  - search_engine: {search_engine}\n  - sage_results_filename: {sage_results_filename}\n  - sage_tmt_filename: {sage_tmt_filename}\n  - sage_intensity_prefix: {sage_intensity_prefix}\n  - sage_fdr_method: {sage_fdr_method}\n  - sage_mod_keep_regex: {sage_mod_keep_regex}\n  - sage_mod_name: {sage_mod_name}\n  - sage_require_mod: {sage_require_mod}\n  - sage_map_all_proteins: {sage_map_all_proteins}')
 
     # Маркер успешно завершенного статистического расчета
     # (per-mod CSV-файлы имеют суффиксы и не подходят как единый кэш-файл)
@@ -311,190 +278,173 @@ def main():
     if run_stats:
         logger.info("Starting full recalculation of results...")
 
-        annotated_pickle_path = os.path.join(output_dir, 'annotated_df.pickle')
-        if search_engine == 'sage':
-            logger.info("search_engine='sage': using Sage/enriched-PTM preprocessing; AA_stat, pepXML and mzML steps are skipped.")
-            annot_df = safe_execute(logger, "Sage preprocessing", prepare_sage_phospho,
-                                    sage_dir=sage_dir, grouping_file=group_df_link, fasta_file=fasta_file,
-                                    fdr_threshold=fdr_threshold, results_filename=sage_results_filename,
-                                    tmt_filename=sage_tmt_filename, intensity_prefix=sage_intensity_prefix,
-                                    fdr_method=sage_fdr_method, score_column=sage_score_column,
-                                    decoy_regex=sage_decoy_regex, mod_keep_regex=sage_mod_keep_regex,
-                                    mod_name=sage_mod_name, require_mod=sage_require_mod,
-                                    map_all_proteins=sage_map_all_proteins)
-            if annot_df is None or annot_df.empty:
-                logger.error('Sage preprocessing produced no annotated PSMs. Exiting.')
-                sys.exit(1)
-            annot_df.to_pickle(annotated_pickle_path)
-            logger.info(f'The dataframe with Sage annotation is saved in {annotated_pickle_path}')
+        # Step 1: unimod_df
+        unimod_csv_path = os.path.join(output_dir, 'unimod.csv')
+        unimod_df = safe_execute(logger, "Processing AA_stat results", create_unimod_dataframe, interpretation_file, xml_file)
+        if unimod_df is not None:
+            unimod_df.to_csv(unimod_csv_path, index=False)
+            logger.info(f"Unimod shift annotation saved in {unimod_csv_path}")
         else:
-            # Step 1: unimod_df
-            unimod_csv_path = os.path.join(output_dir, 'unimod.csv')
-            unimod_df = safe_execute(logger, "Processing AA_stat results", create_unimod_dataframe, interpretation_file, xml_file)
-            if unimod_df is not None:
-                unimod_df.to_csv(unimod_csv_path, index=False)
-                logger.info(f"Unimod shift annotation saved in {unimod_csv_path}")
+            sys.exit(1)
+
+        # Шаг 2: cataloque
+        cataloque_csv_path = os.path.join(output_dir, 'cataloque.csv')
+        unimod_search_csv_path = os.path.join(output_dir, 'unimod_search.csv')
+        if os.path.exists(cataloque_csv_path) and os.path.exists(unimod_search_csv_path):
+            logger.info(f"Cataloque and unimod's files already exist in {cataloque_csv_path}")
+        else:
+            cataloque, unimod_search = safe_execute(
+                logger, "Generate a table with peptide identifications based on AA_stat results",
+                cataloque_create, unimod_df, name_of_modification, type_of_modification,
+                data_dir, localization_score_threshold)
+            if cataloque is not None and unimod_search is not None:
+                cataloque.to_csv(cataloque_csv_path, index=False)
+                logger.info(f"The catalog is saved in {cataloque_csv_path}.")
+                unimod_search.to_csv(unimod_search_csv_path, index=False)
+                del unimod_df
             else:
                 sys.exit(1)
 
-            # Шаг 2: cataloque
-            cataloque_csv_path = os.path.join(output_dir, 'cataloque.csv')
-            unimod_search_csv_path = os.path.join(output_dir, 'unimod_search.csv')
-            if os.path.exists(cataloque_csv_path) and os.path.exists(unimod_search_csv_path):
-                logger.info(f"Cataloque and unimod's files already exist in {cataloque_csv_path}")
-            else:
-                cataloque, unimod_search = safe_execute(
-                    logger, "Generate a table with peptide identifications based on AA_stat results",
-                    cataloque_create, unimod_df, name_of_modification, type_of_modification,
-                    data_dir, localization_score_threshold)
-                if cataloque is not None and unimod_search is not None:
-                    cataloque.to_csv(cataloque_csv_path, index=False)
-                    logger.info(f"The catalog is saved in {cataloque_csv_path}.")
-                    unimod_search.to_csv(unimod_search_csv_path, index=False)
-                    del unimod_df
-                else:
-                    sys.exit(1)
-
-            # Шаг 3: all_psms_df
-            all_psms_pickle_path = os.path.join(output_dir, 'pepxml_psms.pickle')
-            unique_mass_psms_pickle_path = os.path.join(output_dir, 'unique_mass_psms.pickle')
-            if os.path.exists(all_psms_pickle_path):
-                logger.info(f"PSMs files already exist in {all_psms_pickle_path}")
-            else:
-                cataloque = pd.read_csv(cataloque_csv_path)
-                unimod_search = pd.read_csv(unimod_search_csv_path)
-                pepxml_res = safe_execute(
-                    logger, "processing pepXML files",
-                    process_pepxml_files, cataloque, pepxml_dir,
-                    mass_tolerance, fdr_threshold, sorting_pepxml, nproc,
-                    min_hits_for_fdr_calc, default_hyperscore_threshold, default_expect_threshold)
-                if pepxml_res is None:
-                    sys.exit(1)
-                all_psms_df, cataloque, results_unique_mods = pepxml_res
-                all_psms_df = safe_execute(logger, "FASTA concat", fasta_concat, all_psms_df, fasta_file)
-                cataloque = safe_execute(logger, "FASTA concat", fasta_concat, cataloque, fasta_file)
-                if all_psms_df is not None:
-                    all_psms_df.to_pickle(all_psms_pickle_path)
-                    logger.info(f"Final save to file: {all_psms_pickle_path}")
-                    logger.info(f"Found {len(all_psms_df)} PSMs from pepXML files.")
-                else:
-                    sys.exit(1)
-                if cataloque is not None:
-                    cataloque.to_csv(cataloque_csv_path, index=False)
-                else:
-                    logger.error('Was not updated cataloque.')
-                if results_unique_mods is not None:
-                    results_unique_mods.to_pickle(unique_mass_psms_pickle_path)
-                    del results_unique_mods
-                else:
-                    logger.error('Was not created unique_mass_df.')
-
-            psms_zero_path = os.path.join(output_dir, 'psms_zero.pickle')
-            psm_filtered_path = os.path.join(output_dir, 'psm_filtered.pickle')
+        # Шаг 3: all_psms_df
+        all_psms_pickle_path = os.path.join(output_dir, 'pepxml_psms.pickle')
+        unique_mass_psms_pickle_path = os.path.join(output_dir, 'unique_mass_psms.pickle')
+        if os.path.exists(all_psms_pickle_path):
+            logger.info(f"PSMs files already exist in {all_psms_pickle_path}")
+        else:
+            cataloque = pd.read_csv(cataloque_csv_path)
             unimod_search = pd.read_csv(unimod_search_csv_path)
-            if os.path.exists(psm_filtered_path) and os.path.exists(psms_zero_path):
-                logger.info(f"PSMs filtered files already exist in {psm_filtered_path}")
+            pepxml_res = safe_execute(
+                logger, "processing pepXML files",
+                process_pepxml_files, cataloque, pepxml_dir,
+                mass_tolerance, fdr_threshold, sorting_pepxml, nproc,
+                min_hits_for_fdr_calc, default_hyperscore_threshold, default_expect_threshold)
+            if pepxml_res is None:
+                sys.exit(1)
+            all_psms_df, cataloque, results_unique_mods = pepxml_res
+            all_psms_df = safe_execute(logger, "FASTA concat", fasta_concat, all_psms_df, fasta_file)
+            cataloque = safe_execute(logger, "FASTA concat", fasta_concat, cataloque, fasta_file)
+            if all_psms_df is not None:
+                all_psms_df.to_pickle(all_psms_pickle_path)
+                logger.info(f"Final save to file: {all_psms_pickle_path}")
+                logger.info(f"Found {len(all_psms_df)} PSMs from pepXML files.")
             else:
-                all_psms_df = pd.read_pickle(all_psms_pickle_path)
-                cataloque = pd.read_csv(cataloque_csv_path)
-                merge_res = safe_execute(
-                    logger, "merge cataloque and pepxml dfs",
-                    spectra_merge, cataloque, all_psms_df, unimod_search
-                )
-                del cataloque
-                del all_psms_df
-                if merge_res is None:
-                    sys.exit(1)
-                psm_filtered, psms_zero = merge_res
-                if psm_filtered is not None:
-                    psm_filtered.to_pickle(psm_filtered_path)
-                    logger.info(f"Found {len(psm_filtered)} filtered PSMs from pepXML files.")
-                    del psm_filtered
-                else:
-                    sys.exit(1)
-                if psms_zero is not None:
-                    psms_zero.to_pickle(psms_zero_path)
-                    del psms_zero
-
-            # Step 4: filtered_df
-            filtered_psms_pickle_path = os.path.join(output_dir, 'filtered_psms.pickle')
-            if os.path.exists(filtered_psms_pickle_path):
-                logger.info(f"Loading existing filtered PSMs from {filtered_psms_pickle_path}")
+                sys.exit(1)
+            if cataloque is not None:
+                cataloque.to_csv(cataloque_csv_path, index=False)
             else:
-                all_psms_df = pd.read_pickle(psm_filtered_path)
-                all_psms_df['mod_name'] = all_psms_df['mod_name'].apply(
-                    lambda x: 'Glu' if isinstance(x, str) and '-Glu-' in x else x)
-                all_psms_df["position_mod2"] = all_psms_df.apply(
-                    lambda row: map_mod_position(row["peptide_x"], row["position_mod"], row["peptide_y"]),
-                    axis=1
-                )
-                all_psms_df['for_prediction'] = all_psms_df.apply(
-                    lambda row: str(row['position_mod2']) + '|' + row['mod_name'],
-                    axis=1
-                )
-                filtered_df = safe_execute(logger, "prediction RT", prediction_rt, all_psms_df)
-                if filtered_df is not None:
-                    filtered_df.to_pickle(filtered_psms_pickle_path)
-                    logger.info(f"Predicted RT saved in {filtered_psms_pickle_path}")
-                    del filtered_df
-                    del all_psms_df
-
-
-            # Step 5: filtered_df_with_intens
-            intens_pickle_path = os.path.join(output_dir, 'filtered_pms_intens.pickle')
-            intens_zero_path = os.path.join(output_dir, 'pms_zero_intens.pickle')
-            if os.path.exists(intens_pickle_path):
-                logger.info(f"Intensities data already exist in {intens_pickle_path}")
+                logger.error('Was not updated cataloque.')
+            if results_unique_mods is not None:
+                results_unique_mods.to_pickle(unique_mass_psms_pickle_path)
+                del results_unique_mods
             else:
-                filtered_df = pd.read_pickle(filtered_psms_pickle_path)
-                psms_zero = pd.read_pickle(psms_zero_path)
-                cataloque = pd.concat([filtered_df[['file_name','index spectrum']].copy(),
-                                       psms_zero[['file_name','index spectrum']].copy()], ignore_index = True
-                                     )
+                logger.error('Was not created unique_mass_df.')
+
+        psms_zero_path = os.path.join(output_dir, 'psms_zero.pickle')
+        psm_filtered_path = os.path.join(output_dir, 'psm_filtered.pickle')
+        unimod_search = pd.read_csv(unimod_search_csv_path)
+        if os.path.exists(psm_filtered_path) and os.path.exists(psms_zero_path):
+            logger.info(f"PSMs filtered files already exist in {psm_filtered_path}")
+        else:
+            all_psms_df = pd.read_pickle(all_psms_pickle_path)
+            cataloque = pd.read_csv(cataloque_csv_path)
+            merge_res = safe_execute(
+                logger, "merge cataloque and pepxml dfs",
+                spectra_merge, cataloque, all_psms_df, unimod_search
+            )
+            del cataloque
+            del all_psms_df
+            if merge_res is None:
+                sys.exit(1)
+            psm_filtered, psms_zero = merge_res
+            if psm_filtered is not None:
+                psm_filtered.to_pickle(psm_filtered_path)
+                logger.info(f"Found {len(psm_filtered)} filtered PSMs from pepXML files.")
+                del psm_filtered
+            else:
+                sys.exit(1)
+            if psms_zero is not None:
+                psms_zero.to_pickle(psms_zero_path)
                 del psms_zero
-                results_df = safe_execute(logger, "intensities from mzML", intensity, mzml_dir, cataloque.drop_duplicates(), output_dir, nproc)
-                if results_df is not None:
-                    filtered_df = filtered_df.merge(results_df, how = 'left',on=['file_name','index spectrum'])
-                    filtered_df.to_pickle(intens_pickle_path)
-                    del filtered_df
-                    del cataloque
-                    psms_zero = pd.read_pickle(psms_zero_path)
-                    psms_zero = psms_zero.merge(results_df, how = 'left', on=['file_name','index spectrum'])
-                    psms_zero.to_pickle(intens_zero_path)
-                    logger.info(f"The dataframe with intensities is saved in {intens_pickle_path}")
-                    del psms_zero
-                else:
-                    sys.exit(1)
 
-            # Step 6: Annotation
-            annotated_pickle_path = os.path.join(output_dir, 'annotated_df.pickle')
-            if os.path.exists(annotated_pickle_path):
-                logger.info(f"Loading existing annotated data from {annotated_pickle_path}")
+        # Step 4: filtered_df
+        filtered_psms_pickle_path = os.path.join(output_dir, 'filtered_psms.pickle')
+        if os.path.exists(filtered_psms_pickle_path):
+            logger.info(f"Loading existing filtered PSMs from {filtered_psms_pickle_path}")
+        else:
+            all_psms_df = pd.read_pickle(psm_filtered_path)
+            all_psms_df['mod_name'] = all_psms_df['mod_name'].apply(
+                lambda x: 'Glu' if isinstance(x, str) and '-Glu-' in x else x)
+            all_psms_df["position_mod2"] = all_psms_df.apply(
+                lambda row: map_mod_position(row["peptide_x"], row["position_mod"], row["peptide_y"]),
+                axis=1
+            )
+            all_psms_df['for_prediction'] = all_psms_df.apply(
+                lambda row: str(row['position_mod2']) + '|' + row['mod_name'],
+                axis=1
+            )
+            filtered_df = safe_execute(logger, "prediction RT", prediction_rt, all_psms_df)
+            if filtered_df is not None:
+                filtered_df.to_pickle(filtered_psms_pickle_path)
+                logger.info(f"Predicted RT saved in {filtered_psms_pickle_path}")
+                del filtered_df
+                del all_psms_df
+
+
+        # Step 5: filtered_df_with_intens
+        intens_pickle_path = os.path.join(output_dir, 'filtered_pms_intens.pickle')
+        intens_zero_path = os.path.join(output_dir, 'pms_zero_intens.pickle')
+        if os.path.exists(intens_pickle_path):
+            logger.info(f"Intensities data already exist in {intens_pickle_path}")
+        else:
+            filtered_df = pd.read_pickle(filtered_psms_pickle_path)
+            psms_zero = pd.read_pickle(psms_zero_path)
+            cataloque = pd.concat([filtered_df[['file_name','index spectrum']].copy(),
+                                   psms_zero[['file_name','index spectrum']].copy()], ignore_index = True
+                                 )
+            del psms_zero
+            results_df = safe_execute(logger, "intensities from mzML", intensity, mzml_dir, cataloque.drop_duplicates(), output_dir, nproc)
+            if results_df is not None:
+                filtered_df = filtered_df.merge(results_df, how = 'left',on=['file_name','index spectrum'])
+                filtered_df.to_pickle(intens_pickle_path)
+                del filtered_df
+                del cataloque
+                psms_zero = pd.read_pickle(psms_zero_path)
+                psms_zero = psms_zero.merge(results_df, how = 'left', on=['file_name','index spectrum'])
+                psms_zero.to_pickle(intens_zero_path)
+                logger.info(f"The dataframe with intensities is saved in {intens_pickle_path}")
+                del psms_zero
             else:
-                filtered_df_with_intens = pd.read_pickle(intens_pickle_path)
-                psms_zero = pd.read_pickle(intens_zero_path)
-                if filtered_df_with_intens is not None:
-                    columns = ['Modification','id_prot','modified_peptide_x','position_in_protein',
-                                                      'peptide_x','peptide_y','spectrum_x',
-                                                      'spectrum_y','file_name','intensity','m/z','charge','sequence_y']
-                    annot_df = filtered_df_with_intens[columns].copy()
-                    final_df = pd.concat([psms_zero[columns],
-                                          annot_df], ignore_index = True
-                                        )
-                    del filtered_df_with_intens
-                    del psms_zero
-                    del annot_df
-                    final_df = final_df[~final_df['m/z'].isna()]
-                    annot_df = safe_execute(logger, "annotation of TMT labels", tags_annotation, final_df,
-                                                           type_tmt, output_dir, nproc)
-                    if annot_df is None: sys.exit(1)
-                    for c in ['m/z', 'intensity', 'Unnamed: 0']:
-                        if c in annot_df.columns:
-                            del annot_df[c]
-                    annot_df.to_pickle(annotated_pickle_path)
-                    logger.info(f"The dataframe with annotation is saved in {annotated_pickle_path}")
-                else:
-                    sys.exit(1)
+                sys.exit(1)
+
+        # Step 6: Annotation
+        annotated_pickle_path = os.path.join(output_dir, 'annotated_df.pickle')
+        if os.path.exists(annotated_pickle_path):
+            logger.info(f"Loading existing annotated data from {annotated_pickle_path}")
+        else:
+            filtered_df_with_intens = pd.read_pickle(intens_pickle_path)
+            psms_zero = pd.read_pickle(intens_zero_path)
+            if filtered_df_with_intens is not None:
+                columns = ['Modification','id_prot','modified_peptide_x','position_in_protein',
+                                                  'peptide_x','peptide_y','spectrum_x',
+                                                  'spectrum_y','file_name','intensity','m/z','charge','sequence_y']
+                annot_df = filtered_df_with_intens[columns].copy()
+                final_df = pd.concat([psms_zero[columns],
+                                      annot_df], ignore_index = True
+                                    )
+                del filtered_df_with_intens
+                del psms_zero
+                del annot_df
+                final_df = final_df[~final_df['m/z'].isna()]
+                annot_df = safe_execute(logger, "annotation of TMT labels", tags_annotation, final_df,
+                                                       type_tmt, output_dir, nproc)
+                if annot_df is None: sys.exit(1)
+                for c in ['m/z', 'intensity', 'Unnamed: 0']:
+                    if c in annot_df.columns:
+                        del annot_df[c]
+                annot_df.to_pickle(annotated_pickle_path)
+                logger.info(f"The dataframe with annotation is saved in {annotated_pickle_path}")
+            else:
+                sys.exit(1)
 
         # Step 7: Statistics
         sort_df_path = os.path.join(output_dir, "sorted_df.pickle")
@@ -505,12 +455,11 @@ def main():
             if 'annot_df' not in globals():
                 annot_df = pd.read_pickle(annotated_pickle_path)
             # модификации, исключаемые из анализа (из конфига, без regex)
-            if 'Modification' in annot_df.columns:
-                for ex_mod in exclude_modifications:
-                    annot_df = annot_df[~annot_df['Modification'].str.contains(ex_mod, regex=False, na=False)]
+            for ex_mod in exclude_modifications:
+                annot_df = annot_df[~annot_df['Modification'].str.contains(ex_mod, regex=False, na=False)]
             annot_df.reset_index(drop=True, inplace=True)
             stats_df = safe_execute(logger, "normalization", tmt_normalization, annot_df,
-                                   intensity_prefix=norm_intensity_prefix,
+                                   intensity_prefix="intensity_",
                                    min_fraction_valid=norm_min_fraction_valid,
                                    use_gis_for_batch=norm_use_gis_for_batch,
                                    normalize_target=norm_target,
@@ -538,39 +487,28 @@ def main():
         logger.info(f"Start calculate statistics.")
         if sorting_pepxml == 'False' and os.path.exists(norm_df_path):
             stats_df = pd.read_pickle(norm_df_path)
-        elif sorting_pepxml == 'True':
-            logger.error("sorting_pepxml='True' is temporarily disabled in this version "
-                         "of the statistics pipeline. Set sorting_pepxml=False.")
+        elif sorting_pepxml == 'True'  and os.path.exists(sort_df_path):
+            stats_df = pd.read_pickle(sort_df_path)
             sys.exit(1)
         else:
             logger.error(f"Normalized data not found at {norm_df_path}.")
             sys.exit(1)
 
-        if search_engine == 'sage':
-            # Sage preprocessing is already sample-annotated; keep TMT_group*/mix_channels.
-            if 'batch' not in stats_df.columns:
-                logger.error("Sage preprocessing did not produce a 'batch' column. Exiting.")
-                sys.exit(1)
-            stats_df['batch'] = stats_df['batch'].astype(int)
-        else:
-            for c in [c for c in stats_df.columns if re.fullmatch(r'TMT_group\d+', str(c))] + ['mix_channels']:
-                if c in stats_df.columns:
-                    del stats_df[c]
-            stats_df = safe_execute(logger, "annotation of samples", samples_annotation, stats_df, group_df_link)
-            if stats_df is None: sys.exit(1)
+        for c in ['TMT_group1', 'TMT_group2', 'TMT_group3', 'mix_channels']:
+            if c in stats_df.columns:
+                del stats_df[c]
+        stats_df = safe_execute(logger, "annotation of samples", samples_annotation, stats_df, group_df_link)
+        if stats_df is None: sys.exit(1)
 
         # алиасы модификаций из конфига: "pattern=replacement" через запятую (regex)
-        if 'Modification' in stats_df.columns and modification_aliases:
-            for alias in re.split(r'\s*,\s*', modification_aliases):
-                if '=' in alias:
-                    pattern, repl = alias.split('=', 1)
-                    stats_df['Modification'] = stats_df['Modification'].str.replace(
-                        pattern.strip(), repl.strip(), regex=True)
-
-        is_phospho_experiment = type_experiment.strip().lower() == 'phospho enrichment'
+        for alias in re.split(r'\s*,\s*', modification_aliases):
+            if '=' in alias:
+                pattern, repl = alias.split('=', 1)
+                stats_df['Modification'] = stats_df['Modification'].str.replace(
+                    pattern.strip(), repl.strip(), regex=True)
 
         # --- опциональный rescue позиций через таблицу iPTMnet ---
-        if (not is_phospho_experiment) and iptmnet_positions_file and os.path.isfile(iptmnet_positions_file):
+        if iptmnet_positions_file and os.path.isfile(iptmnet_positions_file):
             logger.info(f"Rescuing PTM positions via {iptmnet_positions_file}")
             cres = pd.read_csv(iptmnet_positions_file)
             cres['position_in_protein'] = cres['position_in_protein'].astype('int')
@@ -592,19 +530,10 @@ def main():
             del stats_df['position_in_protein']
             del stats_df['Modification']
             stats_df.rename(columns={'rescued_position':'position_in_protein','rescued_ptm_type':'Modification'}, inplace=True)
-        elif not is_phospho_experiment:
+        else:
             logger.info("iptmnet_positions_file is not set or not found; using original positions.")
             stats_df = stats_df.drop_duplicates(subset=['id_prot','position_in_protein','modified_peptide_x',
                                                         'Modification','spectrum_y'])
-        else:
-            logger.info("Phospho-enrichment branch: skipping iPTMnet rescue and reference-based filtering.")
-            if 'Modification' not in stats_df.columns:
-                stats_df['Modification'] = sage_mod_name if search_engine == 'sage' else 'Phospho'
-            if 'peptide_clean' not in stats_df.columns and 'peptide' in stats_df.columns:
-                stats_df['peptide_clean'] = stats_df['peptide'].astype(str).str.replace(r'[^A-Z]', '', regex=True)
-            if 'isotope_error' not in stats_df.columns:
-                stats_df['isotope_error'] = 0
-            stats_df = stats_df.drop_duplicates().reset_index(drop=True)
 
         mods = sorted(m for m in stats_df['Modification'].dropna().unique() if m != 'reference')
         logger.info(f"Modifications to test ({len(mods)}): {mods}")
@@ -670,83 +599,74 @@ def main():
                         f"(final_stat_result_{method}_{tag}.csv)")
             return True
 
-        if is_phospho_experiment:
-            tag = sage_mod_name if search_engine == 'sage' else 'phospho'
-            logger.info(f"Running enrichment statistics without reference-based modification sorting (tag='{tag}').")
-            res = safe_execute(logger, 'calculate statistics (phospho enrichment)', statistics,
-                               stats_df.reset_index(drop=True), skip_eb=False, **stats_kwargs)
+        # ==============================================================
+        # Сортировка модификаций:
+        #   - "достаточно представленные" моды -> отдельный расчет с EB;
+        #   - редкие моды -> общий пул БЕЗ EB-модерации (skip_eb=True):
+        #     приор дисперсии на малом числе сайтов ненадежен, а смешивать
+        #     распределения разных модов в один EB-приор некорректно, т.к.
+        #     у каждого типа модификации свое распределение дисперсий.
+        #     В пуле сайты тестируются обычной t-статистикой (WLS), а BH
+        #     считается внутри пула как единого семейства гипотез.
+        # Точное совпадение по строке 'Modification' (без regex) — имена
+        # модов могут содержать спецсимволы ('+', '(', ...).
+        # ==============================================================
+        common_mod = []
+
+        for mod in mods:
+            mod_mask = stats_df['Modification'] == mod
+            stats_mod = stats_df[mod_mask | ref_mask_all]
+            sites_mod = stats_df[mod_mask]
+            num_sites_mod = sites_mod[['id_prot', 'position_in_protein']].drop_duplicates().shape[0]
+            med_obs = median_obs_per_site(sites_mod)
+
+            enough = (num_sites_mod >= min_sites_mod) and \
+                     (num_ref_total >= min_ref) and \
+                     (med_obs >= min_obs_per_site)
+
+            if enough and min_pairs_for_stoich > 0:
+                med_pairs = median_mod_ref_pairs(stats_mod, mod)
+                enough = med_pairs >= min_pairs_for_stoich
+            else:
+                med_pairs = np.nan
+
+            if not enough:
+                logger.warning(f"Not enough data for {mod}: sites={num_sites_mod}, "
+                               f"refs={num_ref_total}, median_obs/site={med_obs:.1f}, "
+                               f"median_mod_ref_pairs={med_pairs}")
+                common_mod.append(mod)
+                continue
+
+            logger.info(f"Running stats for mod {mod}: sites={num_sites_mod}, "
+                        f"refs={num_ref_total}, median_obs/site={med_obs:.1f}")
+            res = safe_execute(logger, f"calculate statistics ({mod})", statistics,
+                               stats_mod.reset_index(drop=True),
+                               skip_eb=False, **stats_kwargs)
             if res is None:
-                sys.exit(1)
-            save_stats_results(tag, res)
-        else:
-            # ==============================================================
-            # Сортировка модификаций:
-            #   - "достаточно представленные" моды -> отдельный расчет с EB;
-            #   - редкие моды -> общий пул БЕЗ EB-модерации (skip_eb=True):
-            #     приор дисперсии на малом числе сайтов ненадежен, а смешивать
-            #     распределения разных модов в один EB-приор некорректно, т.к.
-            #     у каждого типа модификации свое распределение дисперсий.
-            #     В пуле сайты тестируются обычной t-статистикой (WLS), а BH
-            #     считается внутри пула как единого семейства гипотез.
-            # Точное совпадение по строке 'Modification' (без regex) — имена
-            # модов могут содержать спецсимволы ('+', '(', ...).
-            # ==============================================================
-            common_mod = []
+                logger.error(f"Statistics failed for {mod}; modification skipped.")
+                continue
+            save_stats_results(mod, res)
 
-            for mod in mods:
-                mod_mask = stats_df['Modification'] == mod
-                stats_mod = stats_df[mod_mask | ref_mask_all]
-                sites_mod = stats_df[mod_mask]
-                num_sites_mod = sites_mod[['id_prot', 'position_in_protein']].drop_duplicates().shape[0]
-                med_obs = median_obs_per_site(sites_mod)
+        # --- общий пул редких модификаций (без EB-модерации) ---
+        if common_mod:
+            logger.info(f"Pooling {len(common_mod)} rare modifications "
+                        f"(no EB moderation): {common_mod}")
+            pool_mask = stats_df['Modification'].isin(common_mod) | ref_mask_all
+            common_df = stats_df[pool_mask].reset_index(drop=True)
+            n_common_sites = (common_df.loc[common_df['Modification'] != 'reference',
+                                            ['Modification', 'id_prot', 'position_in_protein']]
+                              .drop_duplicates().shape[0])
 
-                enough = (num_sites_mod >= min_sites_mod) and \
-                         (num_ref_total >= min_ref) and \
-                         (med_obs >= min_obs_per_site)
-
-                if enough and min_pairs_for_stoich > 0:
-                    med_pairs = median_mod_ref_pairs(stats_mod, mod)
-                    enough = med_pairs >= min_pairs_for_stoich
-                else:
-                    med_pairs = np.nan
-
-                if not enough:
-                    logger.warning(f"Not enough data for {mod}: sites={num_sites_mod}, "
-                                   f"refs={num_ref_total}, median_obs/site={med_obs:.1f}, "
-                                   f"median_mod_ref_pairs={med_pairs}")
-                    common_mod.append(mod)
-                    continue
-
-                logger.info(f"Running stats for mod {mod}: sites={num_sites_mod}, "
-                            f"refs={num_ref_total}, median_obs/site={med_obs:.1f}")
-                res = safe_execute(logger, f"calculate statistics ({mod})", statistics,
-                                   stats_mod.reset_index(drop=True),
-                                   skip_eb=False, **stats_kwargs)
-                if res is None:
-                    logger.error(f"Statistics failed for {mod}; modification skipped.")
-                    continue
-                save_stats_results(mod, res)
-
-            # --- общий пул редких модификаций (без EB-модерации) ---
-            if common_mod:
-                logger.info(f"Pooling {len(common_mod)} rare modifications "
-                            f"(no EB moderation): {common_mod}")
-                pool_mask = stats_df['Modification'].isin(common_mod) | ref_mask_all
-                common_df = stats_df[pool_mask].reset_index(drop=True)
-                n_common_sites = (common_df.loc[common_df['Modification'] != 'reference',
-                                                ['Modification', 'id_prot', 'position_in_protein']]
-                                  .drop_duplicates().shape[0])
-
-                if n_common_sites >= min_sites_for_common:
-                    res = safe_execute(logger, "calculate statistics (common pool)", statistics,
-                                       common_df,
-                                       skip_eb=True, **stats_kwargs)
-                    if res is not None:
-                        save_stats_results('common', res)
-                else:
-                    logger.warning(f"Common pool too small ({n_common_sites} sites < "
-                                   f"min_sites_for_common={min_sites_for_common}); "
-                                   "statistical testing skipped for rare modifications.")
+            if n_common_sites >= min_sites_for_common:
+                res = safe_execute(logger, "calculate statistics (common pool)", statistics,
+                                   common_df,
+                                   skip_eb=True, **stats_kwargs)
+                if res is not None:
+                    save_stats_results('common', res)
+            else:
+                logger.warning(f"Common pool too small ({n_common_sites} sites < "
+                               f"min_sites_for_common={min_sites_for_common}); "
+                               "statistical testing skipped for rare modifications.")
 
         # статистика успешно завершена — ставим маркер кэша
         with open(stats_done_marker, 'w') as fh:
@@ -756,8 +676,8 @@ def main():
         # --- аннотация результатов по базам данных ---
         try:
             logger.info("Start annotation PTMs with db.")
-            if 'stats_df' not in globals() or stats_df is None or 'id_prot' not in stats_df.columns:
-                logger.warning("stats_df is not available or has no id_prot column; skipping db annotation.")
+            if 'stats_df' not in globals() or stats_df is None:
+                logger.warning("stats_df is not available; skipping db annotation.")
             else:
                 # iPTMnet
                 protein_ids = stats_df['id_prot'].unique()
