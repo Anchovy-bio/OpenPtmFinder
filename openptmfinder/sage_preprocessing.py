@@ -224,7 +224,7 @@ def samples_annotation_sage(full_df: pd.DataFrame, group_df_link: str) -> pd.Dat
         df = df.rename(columns={"filename": "file_name"})
     if "file_name" not in df.columns:
         raise KeyError("Sage results need a 'filename' or 'file_name' column.")
-
+    df['file_name'] = df['file_name'].str.split('.').str[0]
     try:
         group_df = pd.read_csv(group_df_link, sep=None, engine="python")
     except Exception as e:
