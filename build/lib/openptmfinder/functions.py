@@ -1,27 +1,20 @@
+import ast
 import re
 import json
 import logging
 import pandas as pd
 import numpy as np
 import os
-import zipfile
-import io
-import gzip
 import glob
-import importlib
-import contextlib
+from multiprocessing import cpu_count
 from pyteomics import pepxml, mzml, fasta
-from statsmodels.stats.multitest import multipletests
 from xml.etree import ElementTree as ET
-from deeplc import DeepLC, FeatExtractor
+from deeplc import DeepLC
 from scipy import stats as scipy_stats
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.optimize import curve_fit
 from tqdm import tqdm
 from Bio import pairwise2
-#from Bio.Align import PairwiseAligner
-import warnings
-warnings.filterwarnings("ignore")
 from collections import defaultdict
 from typing import List, Literal, Optional, Sequence
 
@@ -69,7 +62,7 @@ def unimod_name(n, xml_text):
         
         return mod, t
     except AttributeError:
-        # Это может произойти, если регулярное выражение не находит совпадение
+        # raised when the regular expression finds no match
         logger.warning(f"Unable to find information about unimod with record_id={n}. Skipped.")
         return None, None
     except Exception as e:
@@ -146,7 +139,7 @@ def create_unimod_dataframe(interpretation_file, xml_file):
 
     df = pd.DataFrame(rows_data)
     
-    # Фильтрация строк, где unimod_name пустое
+    # Drop rows with an empty unimod_name
     df = df[df['unimod_name'].apply(lambda x: len(x) > 0 and x != [''])]
 
     logger.info(f"A DataFrame with {len(df)} rows is created.")
@@ -180,7 +173,7 @@ def dataframe_start(mod1, file, name_modifications, link_data, localization_scor
         return None
 
 def cataloque_create(unimod, name_of_modification, type_of_modification, link_data, localization_score_threshold):
-    """Создает каталог с модификациями и аминокислотами."""
+    """Build the catalogue of modification candidates and amino-acid patterns."""
     cataloque = pd.DataFrame()
     unimod_search_list = []
 
@@ -212,11 +205,10 @@ def cataloque_create(unimod, name_of_modification, type_of_modification, link_da
                             if df is not None and not df.empty:
                                 df['accession_unimod'] = line.accession[ind]
                                 cataloque = pd.concat([cataloque, df], ignore_index=True)
-                                #logger.info(f"Добавлено {len(df)} записей в каталог.")
-        
+
         unimod_search = pd.DataFrame(unimod_search_list)
-        
-        # Обработка референсного файла
+
+        # Process the reference (zero mass shift) file
         ref_file = os.path.join(link_data, '+0.0000.csv')
         file_reader = pd.read_csv(ref_file, sep="\t")
         file_reader['peptide'] = file_reader['peptide'].apply(
@@ -232,7 +224,7 @@ def cataloque_create(unimod, name_of_modification, type_of_modification, link_da
         cataloque.rename(columns={'top isoform': 'modified_peptide'}, inplace=True)
         cataloque = pd.concat([file_reader, cataloque], ignore_index=True)
 
-        # Расчет позиций
+        # Compute modification positions within the peptide
         for ind, line in enumerate(cataloque.itertuples()):
             pos = 0
             if line.file_mass != 0:
@@ -246,8 +238,7 @@ def cataloque_create(unimod, name_of_modification, type_of_modification, link_da
                     while pos>len(line.peptide):
                         pos= pos - (find_pep.find(']') -  find_pep.find('['))
                 cataloque.loc[ind, 'position_mod'] = pos
-                #cataloque.loc[ind, 'for_prediction'] = str(pos) + '|' + line.Modification.split('@')[0]
-        #delite dublicates
+        # drop duplicates
         cataloque['mod_name'] = cataloque['Modification'].apply(lambda x: x.split('@')[0])
         cataloque['mod_name'] = cataloque['mod_name'].astype('category')
         cataloque = (cataloque.sort_values("localization score", ascending=False)
@@ -302,8 +293,8 @@ def intensity(link_mzml, cataloque, output_dir, n_processes=None):
         return cataloque
         
     unique_files = cataloque['file_name'].unique()
-    
-    # Создаем временную директорию для результатов
+
+    # Temporary directory for per-file results
     temp_dir = os.path.join(output_dir, 'temp_intensity_results')
     os.makedirs(temp_dir, exist_ok=True)
 
@@ -314,7 +305,7 @@ def intensity(link_mzml, cataloque, output_dir, n_processes=None):
             logger.warning(f"File not found: {mzml_path}, skipping.")
             continue
         sub_df = cataloque[cataloque['file_name'] == f].copy()
-        temp_file_path = os.path.join(temp_dir, f"{f}.pkl") # Имя временного файла
+        temp_file_path = os.path.join(temp_dir, f"{f}.pkl")  # temporary file name
         tasks.append((mzml_path, sub_df, temp_file_path))
 
     results_files = []
@@ -331,28 +322,28 @@ def intensity(link_mzml, cataloque, output_dir, n_processes=None):
             except Exception as e:
                 logger.error(f"An unexpected error occurred for file {path}: {e}")
     finally:
-        # shutdown() гарантирует, что все worker-процессы будут завершены
+        # shutdown() guarantees that all worker processes are terminated
         executor.shutdown(wait=True, cancel_futures=True)
-    
-    # Объединяем результаты из временных файлов
+
+    # Combine results from the temporary files
     if not results_files:
         logger.warning("No results were generated.")
         return pd.DataFrame()
-        
+
     logger.info("Combining results from temporary files...")
     all_results_df = pd.DataFrame()
     for file in results_files:
         try:
             df_chunk = pd.read_pickle(file)
             all_results_df = pd.concat([all_results_df, df_chunk])
-            os.remove(file) # Удаляем временный файл
+            os.remove(file)  # remove the temporary file
         except Exception as e:
             logger.error(f"Error reading temporary file {file}: {e}")
-            
-    # Удаляем временную директорию, если она пуста
+
+    # Remove the temporary directory if it is empty
     if not os.listdir(temp_dir):
         os.rmdir(temp_dir)
-        
+
     logger.info("Processing of all mzML files completed.")
     return all_results_df
 
@@ -360,27 +351,40 @@ def intensity(link_mzml, cataloque, output_dir, n_processes=None):
 def process_single_pepxml(file, modmass, spectra_map, peptide, mass_tolerance, fdr_threshold, sorting_pepxml,
                           min_hits_for_fdr_calc, default_hyperscore_threshold, default_expect_threshold):
     error_message = None
+    catal_df = pd.DataFrame()
+    df_mods_unique_filter = pd.DataFrame()
     try:
         ftf = pepxml.DataFrame(file)
         ftf['is_decoy'] = ftf['protein'].astype(str).str.contains('DECOY_', case=False, na=False)
-        
-        #updating cataloque dataframe (add protein name)
+
+        # updating catalogue dataframe (add protein name);
+        # files without catalogue spectra (or outside spectra_map) keep an
+        # empty catal_df instead of failing with an unbound variable
         if file in spectra_map.keys():
-            catal_df=ftf[ftf['start_scan'].isin(list(spectra_map[file]))]
-            
-        #search different mass shifts
+            catal_df = ftf[ftf['start_scan'].isin(list(spectra_map[file]))]
+
+        # search different mass shifts
         df_mods_unique = ftf[ftf['peptide'].isin(list(peptide))]
-        df_mods_unique_filter = pepxml.filter_df(df_mods_unique, fdr=fdr_threshold)
-        
+        if not df_mods_unique.empty:
+            try:
+                df_mods_unique_filter = pepxml.filter_df(df_mods_unique, fdr=fdr_threshold)
+            except Exception as e:
+                logger.warning(f"FDR filtering of unique-modification PSMs failed "
+                               f"in {os.path.basename(file)}: {e}")
+
+        def _tol(mod):
+            # the unmodified (zero) shift is allowed a wider window because
+            # systematic calibration offsets affect all PSMs alike
+            return 0.05 if mod == 0 else mass_tolerance
+
         mask = np.zeros(len(ftf), dtype=bool)
         for mod in modmass:
-            tol = 0.05 if mod == 0 else mass_tolerance
-            mask |= (np.abs(ftf['massdiff'] - mod) <= tol)
+            mask |= (np.abs(ftf['massdiff'] - mod) <= _tol(mod))
         filtered_ftf = ftf[mask]
 
         dfs = []
         for mod in modmass:
-            mod_mask = (np.abs(filtered_ftf['massdiff'] - mod) <= mass_tolerance)
+            mod_mask = (np.abs(filtered_ftf['massdiff'] - mod) <= _tol(mod))
             current_mod_df = filtered_ftf[mod_mask].copy()
 
             if current_mod_df.empty:
@@ -395,7 +399,9 @@ def process_single_pepxml(file, modmass, spectra_map, peptide, mass_tolerance, f
                 num_targets = current_mod_df[current_mod_df['is_decoy'] == False].shape[0]
                 num_decoys = current_mod_df[current_mod_df['is_decoy'] == True].shape[0]
 
-                #if num_targets < min_hits_for_fdr_calc or num_decoys == 0:
+                # With no decoys the per-mod FDR is undefined; fall back to
+                # the default score thresholds (min_hits_for_fdr_calc is kept
+                # for API compatibility with the catalogue-based caller).
                 if num_decoys == 0:
                     logger.warning(f"File {os.path.basename(file)} for modification {mod}: Insufficient targets ({num_targets}) or decoys ({num_decoys}) for reliable FDR calculation. Applying score-based filtering.")
                     df1 = current_mod_df[(current_mod_df['hyperscore'] >= default_hyperscore_threshold) &
@@ -523,7 +529,7 @@ def spectra_merge(cataloque, all_psms_df, unimod):
                             on=["id_prot","mod_name"], 
                             how="inner"
                            )
-    print('merged')
+    logger.debug("spectra_merge: catalogue merged with modified PSMs")
     mask = (merged["position_in_protein"] >= merged["peptide_start_y"]) & (merged["position_in_protein"] <= merged["peptide_end_y"])
     filtered = merged[mask]
     del merged
@@ -532,7 +538,7 @@ def spectra_merge(cataloque, all_psms_df, unimod):
     filtered['charge'] = filtered['spectrum_y'].str.split('.').str[3].astype('int8')
     filtered['index spectrum'] = filtered['index spectrum'].astype('int32')
     psms_zero = psms_zero.drop_duplicates(subset='spectrum')
-    print('filtered done')
+    logger.debug("spectra_merge: position filtering done")
     psms_zero_filtered = psms_zero.merge(filtered[['Modification','id_prot','peptide_y','position_in_protein',
                                                    'spectrum_x','peptide_x','modified_peptide_x','charge']].drop_duplicates(), 
                                          left_on = ['peptide','id_prot','charge'], 
@@ -541,7 +547,7 @@ def spectra_merge(cataloque, all_psms_df, unimod):
                                         )
     del psms_zero_filtered['peptide']
     del psms_zero
-    print('zero done')
+    logger.debug("spectra_merge: reference (zero-shift) PSMs matched")
     psms_zero_filtered.rename(columns = {'spectrum':'spectrum_y','modified_peptide':'modified_peptide_y',
                                         'sequence':'sequence_y'}, inplace = True)
     psms_zero_filtered['Modification'] = 'reference'
@@ -560,9 +566,9 @@ def map_mod_position(peptide1: str, mod_position1: int, peptide2: str) -> int:
     
     mod_position2 = 0
     if mod_position1 == -1:
-        mod_position2 == -1
+        mod_position2 = -1
     elif mod_position1 == 0:
-        mod_position2 == 0
+        mod_position2 = 0
     else:
         aln1, aln2, *_ = pairwise2.align.globalxx(peptide1, peptide2)[0]
 
@@ -590,7 +596,7 @@ def prediction_rt(pepxml_psms: pd.DataFrame) -> pd.DataFrame:
         logger.warning("Input DataFrame is empty. Skipping RT prediction.")
         return None
 
-    # Фильтруем данные для калибровки и предсказания
+    # Select the data used for calibration and prediction
     pepxml_psms.rename(columns={'file_mass_y':'file_mass'}, inplace=True)
     calibration_set = pepxml_psms[
         (pepxml_psms['file_mass'] != 0) & 
@@ -625,7 +631,7 @@ def prediction_rt(pepxml_psms: pd.DataFrame) -> pd.DataFrame:
     
     calibration_params = {}
     
-    # Калибровка и фильтрация для каждой модификации отдельно
+    # Calibrate and filter each modification separately
     mod_types = rt_diff_df['file_mass'].unique()
     for mod in mod_types:
         mod_df = rt_diff_df[rt_diff_df['file_mass'] == mod]
@@ -741,7 +747,7 @@ def annotate_tmt_chunk(chunk: pd.DataFrame, type_tmt: str, output_temp_file: str
             logger.error(f"Error processing row {i}: {e}")
             continue
 
-    # Сохраняем результат в файл и возвращаем путь
+    # Save the result to a file and return its path
     chunk.to_pickle(output_temp_file)
     return output_temp_file
 
@@ -777,22 +783,22 @@ def tags_annotation(cataloque: pd.DataFrame, type_tmt: str, output, n_proc: int 
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
 
-    # Объединяем результаты из временных файлов
+    # Combine results from the temporary files
     if not results_files:
         logger.warning("No results were generated.")
         return pd.DataFrame()
-        
+
     logger.info("Combining results from temporary files...")
     all_results_df = pd.DataFrame()
     for file in results_files:
         try:
             df_chunk = pd.read_pickle(file)
             all_results_df = pd.concat([all_results_df, df_chunk])
-            os.remove(file) # Удаляем временный файл
+            os.remove(file)  # remove the temporary file
         except Exception as e:
             logger.error(f"Error reading temporary file {file}: {e}")
 
-    # Удаляем временную директорию, если она пуста
+    # Remove the temporary directory if it is empty
     if os.path.exists(temp_dir) and not os.listdir(temp_dir):
         os.rmdir(temp_dir)
         
@@ -806,38 +812,55 @@ def samples_annotation(full_df: pd.DataFrame, group_df_link: str) -> pd.DataFram
         return full_df
         
     try:
-        # Пытаемся прочитать с разделителем по умолчанию (',')
+        # Try the default separator (',') first
         group_df = pd.read_csv(group_df_link)
     except Exception:
-        # Если не получилось, пробуем с разделителем ';'
+        # Fall back to the ';' separator
         try:
             group_df = pd.read_csv(group_df_link, sep=';')
         except Exception as e:
             logger.error(f"Error reading grouping file {group_df_link}: {e}")
             return full_df.copy()
         
+    group_cols = sorted(
+        [c for c in group_df.columns if re.fullmatch(r"TMT_group\d+", str(c))],
+        key=lambda c: int(re.search(r"\d+", str(c)).group())
+    )
+
+    if not group_cols:
+        logger.error(f"Grouping file {group_df_link} has no TMT_groupN columns.")
+        return full_df.copy()
+    parse_cols = group_cols + (["mix_channels"] if "mix_channels" in group_df.columns else [])
+
     full_df = full_df.drop_duplicates(subset=['id_prot','position_in_protein','modified_peptide_x','Modification','spectrum_y'])
     full_df['batch'] = full_df['file_name'].str.split('_').str[1].str[1:]
     full_df['batch'] = full_df['batch'].astype('int')
     group_df['batch'] = group_df['batch'].astype('int')
+    
+    if 'TMT_group1'in full_df.columns.tolist():
+        del full_df['TMT_group1']
+        
+    if 'TMT_group2'in full_df.columns.tolist():
+        del full_df['TMT_group2']
+        
+    if 'TMT_group3'in full_df.columns.tolist():
+        del full_df['TMT_group3']
+        
+    if 'mix_channels'in full_df.columns.tolist():
+        del full_df['mix_channels']
+        
     full_df_group = full_df.merge(group_df, how='left', on=['file_name','batch'])
-
-    missing_annotations_count = len(set(full_df_group['file_name'][full_df_group['TMT_group1'].isna()]))
+    missing_annotations_count = len(set(full_df_group['file_name'][full_df_group[group_cols[0]].isna()]))
     if missing_annotations_count > 0:
         logger.warning(f"There are no annotations for {missing_annotations_count} files.")
-    
-    full_df_group = full_df_group[full_df_group['TMT_group1'].notna()].copy()
-    
-    full_df_group['TMT_group1'] = full_df_group['TMT_group1'].apply(
-        lambda x: re.split(r'\s*,\s*', re.sub(r"[\'\[\]]", "", str(x))))
-    full_df_group['TMT_group2'] = full_df_group['TMT_group2'].apply(
-        lambda x: re.split(r'\s*,\s*', re.sub(r"[\'\[\]]", "", str(x))))
-    full_df_group['TMT_group3'] = full_df_group['TMT_group3'].apply(
-        lambda x: re.split(r'\s*,\s*', re.sub(r"[\'\[\]]", "", str(x))))
-    full_df_group['mix_channels'] = full_df_group['mix_channels'].apply(
-        lambda x: re.split(r'\s*,\s*', re.sub(r"[\'\[\]]", "", str(x))))
 
-    logger.info("Samples annotation completed.")
+    full_df_group = full_df_group[full_df_group[group_cols[0]].notna()].copy()
+
+    for c in parse_cols:
+        full_df_group[c] = full_df_group[c].apply(
+            lambda x: re.split(r'\s*,\s*', re.sub(r"[\'\[\]]", "", str(x))))
+
+    logger.info(f"Samples annotation completed ({len(group_cols)} experimental groups).")
 
     return full_df_group
 
@@ -1082,135 +1105,6 @@ def tmt_normalization(df: pd.DataFrame,
     return out
 
 
-def sorting_psms(df_copy: pd.DataFrame,
-                 intensity_prefix: str = "intensity_",
-                 normalized_suffix: str = "_norm",
-                 group_prefix: str = "TMT_group",
-                 batch_col: str = "batch",
-                 max_missing_fraction: float = 0.5,
-                 impute_missing: bool = False,
-                 impute_low: bool = False,
-                 low_factor: float = 0.5):
-    """
-    Filter PSMs by within-group channel completeness; optionally impute.
-
-    Defaults are deliberately conservative: no imputation. The function only
-    removes PSMs whose per-TMT-group missing fraction exceeds
-    max_missing_fraction. Downstream site aggregation/WLS uses observed channels
-    and per-channel precisions, so median imputation is not required and is
-    generally harmful for differential testing.
-
-    Returns (df, stat_dict, num_deleted, delete_indices) for backward
-    compatibility.
-    """
-    if df_copy.empty:
-        logger.warning("Input DataFrame is empty. Skipping PSM sorting.")
-        return df_copy, {}, 0, []
-
-    if batch_col in df_copy.columns:
-        df = df_copy.sort_values(by=batch_col).reset_index(drop=True)
-        batches = df[batch_col]
-    else:
-        df = df_copy.reset_index(drop=True)
-        batches = pd.Series(["__all__"] * len(df), index=df.index)
-
-    group_cols = [c for c in df.columns if re.fullmatch(rf"{re.escape(group_prefix)}\d+", str(c))]
-    group_cols = sorted(group_cols, key=lambda c: int(re.search(r"\d+", str(c)).group()))
-
-    raw_cols = _raw_intensity_columns(df, intensity_prefix, normalized_suffix)
-    fallback_targets = [f"{c}{normalized_suffix}" if f"{c}{normalized_suffix}" in df.columns else c
-                        for c in raw_cols]
-    any_log_target = any(str(c).endswith(normalized_suffix) for c in fallback_targets)
-    if impute_low and any_log_target:
-        logger.warning(
-            "impute_low was requested on log2-normalized columns; low-value "
-            "replacement by median*low_factor is only defined for positive "
-            "linear intensities. impute_low was disabled."
-        )
-        impute_low = False
-
-    groups_cache = {}
-    for b in pd.unique(batches):
-        first_pos = batches[batches == b].index[0]
-        row = df.loc[first_pos]
-        per_group = []
-        for gc in group_cols:
-            cols = _map_for_sort(_parse_channel_cell(row.get(gc)), df.columns, intensity_prefix, normalized_suffix)
-            if cols:
-                per_group.append(cols)
-        if not per_group and fallback_targets:
-            per_group = [fallback_targets]
-        groups_cache[b] = per_group
-
-    stat = defaultdict(int)
-    delete_indices = []
-    num_deleted = 0
-    max_missing_fraction = float(np.clip(max_missing_fraction, 0.0, 1.0))
-
-    row_iter = range(len(df))
-    if tqdm is not None:
-        row_iter = tqdm(row_iter, total=len(df), desc="Processing sorting intensity")
-
-    for row_idx in row_iter:
-        b = batches.iloc[row_idx]
-        per_group = groups_cache.get(b)
-        if per_group is None:
-            delete_indices.append(row_idx)
-            num_deleted += 1
-            continue
-
-        drop_row = False
-        for cols in per_group:
-            if not cols:
-                continue
-            vals = df.loc[row_idx, cols].to_numpy(dtype=float, copy=True)
-            vals = np.where(vals == 0, np.nan, vals)  # zeros are missing in TMT
-            n = vals.size
-            if n == 0:
-                continue
-            finite = np.isfinite(vals)
-            n_obs = int(finite.sum())
-            n_nan = int(n - n_obs)
-
-            if n_obs == 0 or n_nan > max_missing_fraction * n:
-                drop_row = True
-                break
-
-            if (impute_missing or impute_low) and n_obs > 0:
-                med = float(np.nanmedian(vals))
-                changed = False
-                if impute_low and np.isfinite(med):
-                    low = finite & (vals < med * float(low_factor))
-                    if low.any():
-                        vals[low] = med
-                        for col in np.array(cols)[low]:
-                            stat[col] += 1
-                        changed = True
-                if impute_missing:
-                    miss = ~np.isfinite(vals)
-                    if miss.any():
-                        vals[miss] = med
-                        for col in np.array(cols)[miss]:
-                            stat[col] += 1
-                        changed = True
-                if changed:
-                    df.loc[row_idx, cols] = vals
-
-        if drop_row:
-            delete_indices.append(row_idx)
-            num_deleted += 1
-
-    if delete_indices:
-        df.drop(index=delete_indices, inplace=True, errors="ignore")
-        df.reset_index(drop=True, inplace=True)
-
-    return df, dict(stat), num_deleted, delete_indices
-
-
-def impute_tmt_psms(df_copy: pd.DataFrame, **kwargs):
-    """Backward-compatible alias for sorting_psms()."""
-    return sorting_psms(df_copy, **kwargs)
-
 
 def fasta_concat(df,fasta_file):
     if df.empty:
@@ -1263,4 +1157,3 @@ def fasta_concat(df,fasta_file):
     except Exception as e:
         logger.warning(f"Columns weren't deleted or renamed: {e}")
     return df
-

@@ -38,7 +38,9 @@ setup(
         "statsmodels",
         "flask",
         "tqdm",
-        "pyvis"
+        "pyvis",
+        "bs4",
+        "dash"
         
     ],
     entry_points = {"console_scripts": ["OpenPtmFinder=openptmfinder.main:main"]},

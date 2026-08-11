@@ -9,3 +9,5 @@ statsmodels
 flask
 tqdm
 pyvis
+bs4
+dash

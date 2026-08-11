@@ -65,7 +65,7 @@ def _estimate_icc_rough(grouped, channel_cols):
     Returns median ICC across channels, clipped to [0, 0.95].
     """
     iccs = []
-    # Материализуем группы один раз и заменяем tuple-keys на int-индексы
+    # Materialize the groups once and replace tuple keys with int indices
     groups_list = list(grouped)
 
     for col in channel_cols:
@@ -80,7 +80,7 @@ def _estimate_icc_rough(grouped, channel_cols):
             continue
 
         vals = np.array(vals, dtype=float)
-        group_ids = np.array(group_ids, dtype=int)   # гарантированно 1D
+        group_ids = np.array(group_ids, dtype=int)   # guaranteed 1D
         grand_mean = np.mean(vals)
 
         unique_g = np.unique(group_ids)
@@ -256,12 +256,12 @@ def bayesian_site_aggregation(
 
     # --- Huber-IRLS robust aggregation ---
     beta = np.full(len(channel_cols), np.nan)
-    den_init = np.nansum(prec_per_group, axis=0)
-    num_init = np.nansum(means * prec_per_group, axis=0)
-    valid_init = den_init > 0
-    beta[valid_init] = num_init[valid_init] / den_init[valid_init]
+    den = np.nansum(prec_per_group, axis=0)
+    num = np.nansum(means * prec_per_group, axis=0)
+    valid_init = den > 0
+    beta[valid_init] = num[valid_init] / den[valid_init]
 
-    for _ in range(huber_iters):
+    for _ in range(max(int(huber_iters), 0)):
         resid = means - beta[None, :]          # (n_groups, n_channels)
         mad_resid = np.nanmedian(np.abs(resid), axis=0)
         mad_resid = np.maximum(mad_resid, 1e-12)
@@ -275,7 +275,11 @@ def bayesian_site_aggregation(
         den = np.nansum(final_w, axis=0)
         num = np.nansum(means * final_w, axis=0)
         valid = den > 0
-        beta = np.where(valid, num / den, np.nan)
+        # Masked division: np.where(valid, num / den, nan) would still
+        # evaluate num / den everywhere and flood RuntimeWarning on the
+        # (normal) channels where no group has observations (den == 0).
+        beta = np.full(len(channel_cols), np.nan)
+        beta[valid] = num[valid] / den[valid]
 
     # --- aggregated variance & precision ---
     out_vals = beta.copy()
@@ -284,14 +288,14 @@ def bayesian_site_aggregation(
     valid = den > 0
     var_agg[valid] = 1.0 / den[valid]      # Var = 1 / sum(weights) — correct for WLS
 
-    # floor для agg variance
+    # floor for the aggregated variance
     var_floor = np.nanpercentile(var_agg[np.isfinite(var_agg)], 1) if np.any(np.isfinite(var_agg)) else 1e-8
     if not np.isfinite(var_floor) or var_floor <= 0:
         var_floor = 1e-8
     var_agg = np.maximum(var_agg, var_floor)
 
-    # precision выводим согласованно с (зафлоренной) дисперсией,
-    # чтобы пара (var, prec) не противоречила друг другу в выходных файлах
+    # export precision consistent with the (floored) variance so that the
+    # (var, prec) pair does not contradict itself in the output files
     prec_agg = np.where(np.isfinite(var_agg), 1.0 / var_agg, np.nan)
 
     # --- output ---
@@ -840,7 +844,7 @@ def compute_batch_global_prior(batch_df: pd.DataFrame, channel_cols: list = None
         mad = np.nanmedian(np.abs(Xv - med), axis=0)
         std = np.nanstd(Xv, axis=0, ddof=1)
 
-        # адаптивный floor для MAD
+        # adaptive floor for MAD
         mad_floor = np.nanpercentile(mad[np.isfinite(mad)], 5) if np.any(np.isfinite(mad)) else 1e-6
         mad = np.maximum(mad, mad_floor)
 
@@ -855,6 +859,7 @@ def compute_batch_global_prior(batch_df: pd.DataFrame, channel_cols: list = None
 
 def statistics(df: pd.DataFrame,
                min_group_for_stats: int = 1,
+               min_batches: int = 1,
                method: str = 'aggregate',
                type_experiment: str = 'whole proteome',
                skip_eb: bool = False,
@@ -920,9 +925,9 @@ def statistics(df: pd.DataFrame,
     # drop rows with all channel columns NA
     df = df[~df[channel_cols].isna().all(axis=1)].copy()
 
-    # Переименование в канонические имена; если целевое имя уже занято,
-    # приоритет у исходной колонки (modified_peptide_x/spectrum_y/id_prot),
-    # иначе получаем дублирующиеся имена и "Grouper not 1-dimensional".
+    # Rename to canonical names; if the target name is already taken, the
+    # source column (modified_peptide_x/spectrum_y/id_prot) wins, otherwise
+    # we would get duplicated names and a "Grouper not 1-dimensional" error.
     for src, dst in {'id_prot': 'protein', 'spectrum_y': 'scannr',
                      'modified_peptide_x': 'peptide'}.items():
         if src in df.columns:
@@ -931,7 +936,11 @@ def statistics(df: pd.DataFrame,
             df = df.rename(columns={src: dst})
 
     if {'protein', 'position_in_protein', 'scannr', 'peptide'}.issubset(df.columns):
-        df = df.drop_duplicates(subset=['protein', 'position_in_protein', 'scannr', 'peptide'])
+        dedup_subset = ['protein', 'position_in_protein', 'scannr', 'peptide']
+        # Sage scan numbers restart per file/batch; without file_name/batch the
+        # deduplication below would discard legitimate PSMs from other plexes.
+        dedup_subset += [c for c in ['file_name', 'batch'] if c in df.columns]
+        df = df.drop_duplicates(subset=dedup_subset)
     else:
         df = df.drop_duplicates()
 
@@ -947,6 +956,7 @@ def statistics(df: pd.DataFrame,
     expr = pd.DataFrame()
     weights_df = pd.DataFrame()
     protein_abundance = None
+    protein_var = None
     design = pd.DataFrame()
     noagg = pd.DataFrame()
 
@@ -971,7 +981,7 @@ def statistics(df: pd.DataFrame,
 
         df = df.merge(psm_stats[["n_psm", "n_batches"] + merge_cols].drop_duplicates(),
                       on=merge_cols, how="left")
-        df = df[df["n_batches"] >= 1]
+        df = df[df["n_batches"] >= min_batches]
         df = df[df["n_psm"] >= min_group_for_stats]
         if df.empty:
             logger.warning("No rows left after n_psm/n_batches filtering.")
@@ -1052,6 +1062,12 @@ def statistics(df: pd.DataFrame,
                 protein_abundance = protein_abundance_long.pivot(index='protein',
                                                                  columns='sample',
                                                                  values='value')
+                # per-channel aggregation variance of the protein estimate
+                # (needed for the variance of the corrected site values)
+                protein_var_long = long_un[long_un['channel'].str.endswith('_var')]
+                protein_var = protein_var_long.pivot(index='protein',
+                                                     columns='sample',
+                                                     values='value')
             else:
                 logger.warning("No reference PSMs: protein-abundance correction disabled.")
 
@@ -1077,8 +1093,14 @@ def statistics(df: pd.DataFrame,
             df = df.merge(psm_stats[["n_psm", "n_batches", "peptide", 'protein', 'site']],
                           on=["peptide", 'protein'], how="left")
 
-        df = df[df["n_batches"] >= 3]
-        df = df[df["n_psm"] >= min_group_for_stats]
+        # The n_psm/n_batches thresholds apply to modified (peptide-level)
+        # rows only: reference rows must survive so that protein-abundance
+        # correction remains possible in the whole-proteome branch. Their
+        # n_psm/n_batches are NaN because psm_stats was computed from the
+        # modified subset.
+        keep = (df['Modification'] == 'reference') | (
+            (df["n_batches"] >= min_batches) & (df["n_psm"] >= min_group_for_stats))
+        df = df[keep]
         if df.empty:
             logger.warning("No rows left after n_psm/n_batches filtering.")
             return EMPTY8
@@ -1154,6 +1176,11 @@ def statistics(df: pd.DataFrame,
                 protein_abundance = protein_abundance_long.pivot(index='protein',
                                                                  columns='sample',
                                                                  values='value')
+                # per-channel aggregation variance of the protein estimate
+                protein_var_long = long_un[long_un['channel'].str.endswith('_var')]
+                protein_var = protein_var_long.pivot(index='protein',
+                                                     columns='sample',
+                                                     values='value')
             else:
                 logger.warning("No reference PSMs: protein-abundance correction disabled.")
 
@@ -1183,6 +1210,24 @@ def statistics(df: pd.DataFrame,
         for site in expr_corrected.index:
             prot = site.split('_')[prot_idx]
             expr_corrected.loc[site] = expr_data.loc[site] - protein_abundance.loc[prot, expr_data.columns]
+
+        # The corrected value is a DIFFERENCE (site - protein), so its variance
+        # is the sum of the two aggregation variances. Propagate this into the
+        # WLS weights: prec_corr = 1 / (var_site + var_protein). Without this
+        # step the standard errors after protein correction are too optimistic.
+        if protein_var is not None and not weights_df.empty:
+            site_prots = expr_corrected.index.to_series().map(
+                lambda s: s.split('_')[prot_idx])
+            var_prot = protein_var.reindex(index=site_prots.to_numpy(),
+                                           columns=expr_corrected.columns)
+            var_prot.index = expr_corrected.index
+            with np.errstate(divide='ignore', invalid='ignore'):
+                var_site = 1.0 / weights_df.reindex(index=expr_corrected.index,
+                                                    columns=expr_corrected.columns)
+                var_corr = var_site + var_prot
+                weights_corr = 1.0 / var_corr
+            weights_df.loc[expr_corrected.index, expr_corrected.columns] = \
+                weights_corr.to_numpy(dtype=float)
     else:
         # phospho enrichment: no protein correction by design
         expr_corrected = expr_data.copy()
@@ -1193,16 +1238,16 @@ def statistics(df: pd.DataFrame,
     sample_df["batch"] = sample_df["batch"].astype(int)
     sample_df.index = expr_corrected.columns
 
-    # expr_noagg (diagnostic matrix without aggregation)
+    # noagg (diagnostic matrix without aggregation)
     try:
-        expr_noagg = build_expression_noagg(df, method=method,
-                                            type_experiment=type_experiment,
-                                            channel_cols=channel_cols)
-        if not expr_noagg.empty:
-            expr_noagg = expr_noagg.reindex(index=expr_data.index)
+        noagg = build_expression_noagg(df, method=method,
+                                       type_experiment=type_experiment,
+                                       channel_cols=channel_cols)
+        if not noagg.empty:
+            noagg = noagg.reindex(index=expr_data.index)
     except Exception as e:
         logger.warning(f"build_expression_noagg failed: {e}")
-        expr_noagg = pd.DataFrame()
+        noagg = pd.DataFrame()
 
     # ==================================================================
     # pairwise contrasts
@@ -1232,7 +1277,7 @@ def statistics(df: pd.DataFrame,
                     f"design={design.shape} ===")
         if min(nA, nB) < min_group_for_stats:
             logger.warning(f"Contrast {gB} vs {gA}: fewer than min_group_for_stats="
-                           f"{min_group_for_stats} samples in a group — skipped.")
+                           f"{min_group_for_stats} samples in a group - skipped.")
             continue
 
         expr_pw = expr_corrected.reindex(columns=design.index)

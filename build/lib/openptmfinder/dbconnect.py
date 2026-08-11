@@ -1,332 +1,259 @@
-import requests
-import pandas as pd
-import numpy as np
-from io import StringIO
-import json
-from pyvis.network import Network
-import networkx as nx
-from concurrent.futures import ThreadPoolExecutor, as_completed
+"""
+dbconnect.py — low-level external-API access.
+
+- get_protein_info_from_iptmnet / fetch_protein: per-protein iPTMnet
+  substrate query used by ptm_annotation.py.
+- map_uniprot_ids: UniProt ID-mapping REST API
+  (https://www.uniprot.org/id-mapping) resolving obsolete/secondary
+  accessions to current primary accessions, so that proteins whose ids
+  changed since the experiment can still be annotated in iPTMnet.
+
+The former full-dump helpers (dbPTM per-modification downloads and the
+legacy SIGNOR graph code) were superseded by dbptm_annotation.py and
+signor_annotation.py, which fetch per-protein pages instead of whole-database
+dumps, and were removed.
+"""
+
+import logging
 import os
+import time
+from io import StringIO
+
+import pandas as pd
+import requests
+
+logger = logging.getLogger(__name__)
+
+UNIPROT_IDMAPPING_API = "https://rest.uniprot.org/idmapping"
 
 
 def get_protein_info_from_iptmnet(uniprot_id, session=None):
     """
-    Получает информацию о белке по UniProt ID из API iPTMnet.
-    
+    Fetch substrate PTM entries for one protein from the iPTMnet API.
+
     Args:
-        uniprot_id (str): UniProt ID белка.
-        session (requests.Session, optional): Сессия для повторного использования соединений.
-        
+        uniprot_id (str): UniProt accession of the protein.
+        session (requests.Session, optional): session for connection reuse.
+
     Returns:
-        pd.DataFrame или None
+        pd.DataFrame or None
     """
     base_url = "https://research.bioinformatics.udel.edu/iptmnet/api"
     endpoint = f"{uniprot_id}/substrate"
     url = f"{base_url}/{endpoint}"
-    
+
     try:
-        # Если сессия передана, используем её
+        # Reuse the session if one was provided
         req = session.get(url, timeout=10) if session else requests.get(url, timeout=10)
         req.raise_for_status()
-        
+
         data = req.text
         df = pd.read_csv(StringIO(data), sep=",")
         return df
-    
+
     except requests.exceptions.RequestException as e:
-        print(f"Ошибка запроса для {uniprot_id}: {e}")
+        logger.warning(f"Request failed for {uniprot_id}: {e}")
         return None
     except pd.errors.EmptyDataError:
-        print(f"Пустой ответ для {uniprot_id}")
+        logger.warning(f"Empty response for {uniprot_id}")
         return None
     except Exception as e:
-        print(f"Ошибка обработки ответа для {uniprot_id}: {e}")
+        logger.warning(f"Failed to process the response for {uniprot_id}: {e}")
         return None
 
+
 def fetch_protein(prot, session):
+    """Fetch iPTMnet substrate entries; isoform ids ('P04637-2') are resolved
+    through the canonical accession."""
     prot_nat = prot.split('-')[0] if '-' in prot else prot
     df = get_protein_info_from_iptmnet(prot_nat, session=session)
     return df
 
-def fetch_iptmnet_data(protein_ids, max_workers=10):
-    """
-    Загружает данные для списка UniProt ID параллельно.
-    
+
+# ---------------------------------------------------------------------------
+# UniProt ID mapping (obsolete/secondary accessions -> current primary ones)
+# ---------------------------------------------------------------------------
+
+def _next_page_url(response):
+    """Next-page URL of a paginated UniProt response (RFC 5988 Link header)."""
+    link = response.headers.get("Link", "")
+    for part in link.split(","):
+        if 'rel="next"' in part:
+            return part.split(";")[0].strip().strip("<>")
+    return None
+
+
+def map_uniprot_ids(uniprot_ids, session=None, poll_interval=2.0,
+                    timeout=300.0):
+    """Map UniProt accessions to current primary accessions.
+
+    Uses the UniProt ID-mapping REST API (https://www.uniprot.org/id-mapping):
+    one job is submitted for all ids (from=UniProtKB_AC-ID, to=UniProtKB),
+    polled until finished, and the UniProtKB results are read (with
+    pagination). This resolves secondary/obsolete accessions (merged or
+    demerged entries) that services like iPTMnet do not know.
+
     Args:
-        protein_ids (list): Список UniProt ID.
-        max_workers (int): Число параллельных запросов.
-        
+        uniprot_ids (iterable of str): accessions to map.
+        session (requests.Session, optional): session for connection reuse.
+            NB: do NOT pass a session whose Accept header forces a non-JSON
+            format — the results endpoint honours content negotiation.
+        poll_interval (float): seconds between job-status polls.
+        timeout (float): max seconds to wait for the mapping job.
+
     Returns:
-        pd.DataFrame: объединенный результат
+        dict: {submitted_id: current_primary_accession}. Ids UniProt could
+        not map (deleted entries) are absent. Demerged accessions mapping to
+        several current entries keep the first hit (a warning is logged).
+        Any network/API failure yields an empty dict so that annotation can
+        proceed without remapping.
     """
-    df_list = []
-    with requests.Session() as session:
-        session.headers.update({"Accept": "text/plain"})
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(fetch_protein, prot, session): prot for prot in protein_ids}
-            for future in as_completed(futures):
-                prot = futures[future]
-                df = future.result()
-                if df is not None:
-                    df_list.append(df)
-    
-    if df_list:
-        df_all = pd.concat(df_list, ignore_index=True)
-        df_all = df_all.dropna(subset='site')
-        df_all['site'] = df_all['site'].str[1:].astype(int)
-        df_full = df_all.groupby(['sub_form','site']).agg(list).reset_index()
-        return df_full
-    else:
-        return pd.DataFrame()
-
-    
-    
-def fetch_and_filter(url, result_ids, column_names):
-    r = requests.get(url)
-    r.raise_for_status()
-    df = pd.read_csv(StringIO(r.text), sep="\t", names=column_names)
-    df = df[df['id_prot'].isin(result_ids)]
-    df = df.dropna(subset=['id_prot','position_in_protein'])
-    return df
-
-def get_dbptm_download_links(result, base_url="https://biomics.lab.nycu.edu.tw/dbPTM/download.php", target="Windows", n_threads=4):
-    dbptm_column_names = [
-        "Protein_Name",     
-        "id_prot",      
-        "position_in_protein",         
-        "Modification_Type", 
-        "PubMed_ID",        
-        "Sequence_Context"
-    ]
-    
-    result_ids = set(result['id_prot'])
-    
-    r = requests.get(base_url)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-    urls = [
-        urllib.parse.urljoin(base_url, a["href"])
-        for a in soup.find_all("a", href=True)
-        if target in a.get_text() or target.lower() in a["href"].lower()
-    ]
-
-    urls = [u for u in urls if 'experiment' in u]
-
-    all_dfs = []
-    with ThreadPoolExecutor(max_workers=n_threads) as executor:
-        futures = [executor.submit(fetch_and_filter, url, result_ids, dbptm_column_names) for url in urls]
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading dbPTM files"):
-            df = future.result()
-            all_dfs.append(df)
-    
-    if all_dfs:
-        all_ptms = pd.concat(all_dfs, ignore_index=True)
-        all_ptms = all_ptms.groupby(['id_prot','position_in_protein']).agg(list).reset_index()
-        result_df = result.merge(all_ptms, how='left', on=['id_prot','position_in_protein'])
-    else:
-        result_df = result.copy()
-    
-    return result_df
-
-    
-    
-def get_protein_info_from_signor(df_result: list):
-    """
-    Получает информацию о белке по его UniProt ID из API SIGNOR
-    и возвращает её в виде DataFrame.
-    """
-    col=['ENTITYA', 'TYPEA', 'IDA', 'DATABASEA', 'ENTITYB', 'TYPEB', 'IDB', 'DATABASEB', 'EFFECT', 
-         'MECHANISM', 'RESIDUE', 'SEQUENCE', 'TAX_ID', 'CELL_DATA', 'TISSUE_DATA', 'MODULATOR_COMPLEX', 
-         'TARGET_COMPLEX', 'MODIFICATIONA', 'MODASEQ', 'MODIFICATIONB', 'MODBSEQ', 'PMID',
-         'DIRECT', 'NOTES', 'ANNOTATOR', 'SENTENCE', 'SIGNOR_ID', 'SCORE']
-    url = f"https://signor.uniroma2.it/getData.php"
-    
+    ids = sorted({str(i).strip() for i in uniprot_ids if str(i).strip()})
+    if not ids:
+        return {}
+    http = session if session is not None else requests
     try:
-        print(f"Выполняется запрос к URL: {url}")
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
+        run = http.post(f"{UNIPROT_IDMAPPING_API}/run",
+                        data={"from": "UniProtKB_AC-ID", "to": "UniProtKB",
+                              "ids": ",".join(ids)},
+                        timeout=30)
+        run.raise_for_status()
+        job_id = run.json()["jobId"]
 
-        text = response.text.strip()
+        deadline = time.time() + timeout
+        while True:
+            # When the job finishes, the status endpoint redirects (303) to
+            # the results payload; requests follows the redirect, so the
+            # final JSON IS the results page (plus its Link header).
+            status = http.get(f"{UNIPROT_IDMAPPING_API}/status/{job_id}",
+                              timeout=30)
+            status.raise_for_status()
+            payload = status.json()
+            if "jobStatus" in payload:  # NEW/RUNNING -> keep polling
+                if time.time() > deadline:
+                    raise TimeoutError(
+                        f"UniProt ID-mapping job {job_id} timed out")
+                time.sleep(poll_interval)
+                continue
+            break
 
-        # Определяем разделитель автоматически
-        if "\t" in text:
-            sep = "\t"
+        results = list(payload.get("results", []))
+        next_url = _next_page_url(status)
+        while next_url:  # follow pagination for large jobs
+            page = http.get(next_url, timeout=30)
+            page.raise_for_status()
+            results.extend(page.json().get("results", []))
+            next_url = _next_page_url(page)
+
+        mapping, multi = {}, {}
+        for item in results:
+            to = item.get("to")
+            new_id = (to.get("primaryAccession") if isinstance(to, dict)
+                      else str(to)) if to else None
+            if not new_id:
+                continue
+            old_id = item.get("from")
+            if old_id in mapping and mapping[old_id] != new_id:
+                multi.setdefault(old_id, {mapping[old_id]}).add(new_id)
+            else:
+                mapping[old_id] = new_id
+        if multi:
+            logger.warning(f"Demerged accessions with several current entries "
+                           f"(first kept): {multi}")
+        return mapping
+    except Exception as e:
+        logger.warning(f"UniProt ID mapping unavailable ({e}); "
+                       f"proceeding without accession remapping.")
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Shared accession-mapping cache (<output_dir>/uniprot_idmap.csv)
+# ---------------------------------------------------------------------------
+# All database annotations (iPTMnet, dbPTM, SIGNOR) share ONE mapping cache:
+# the first annotation that meets an unknown (obsolete/secondary) accession
+# resolves it through UniProt ID mapping and stores the pair; later
+# annotations then query their databases with the CURRENT accession directly
+# and relabel the results back to the original id. Ids that could not be
+# resolved are cached as identity pairs (id -> id) so they are never
+# re-submitted to the API.
+
+IDMAP_CACHE_FILENAME = "uniprot_idmap.csv"
+
+
+def load_idmap(output_dir):
+    """Load the shared UniProt accession mapping
+    (<output_dir>/uniprot_idmap.csv) as {original_id: current_id};
+    {} when absent or unreadable."""
+    if not output_dir:
+        return {}
+    path = os.path.join(output_dir, IDMAP_CACHE_FILENAME)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        df = pd.read_csv(path, dtype=str)
+        return dict(zip(df['original_id'], df['current_id']))
+    except Exception as e:
+        logger.warning(f"Could not read the UniProt ID-mapping cache {path}: {e}")
+        return {}
+
+
+def _save_idmap(output_dir, mapping: dict):
+    """Persist the shared accession mapping (overwrites the cache file)."""
+    path = os.path.join(output_dir, IDMAP_CACHE_FILENAME)
+    df = pd.DataFrame({'original_id': list(mapping),
+                       'current_id': list(mapping.values())})
+    df.to_csv(path, index=False)
+
+
+def apply_idmap(ids, output_dir=None):
+    """{original_id: query_id} — replace accessions with their mapped
+    current counterparts where the shared cache has one (identity
+    otherwise). Use this BEFORE querying a database."""
+    cached = load_idmap(output_dir)
+    if not cached:
+        return {str(i): str(i) for i in ids}
+    return {str(i): cached.get(str(i), str(i)) for i in ids}
+
+
+def resolve_unmapped_ids(missing_ids, output_dir=None):
+    """Resolve database misses to current UniProt accessions.
+
+    Cache-aware wrapper around map_uniprot_ids: ids already present in the
+    shared cache are answered from disk (positives return the stored
+    accession, negatives are skipped), only never-seen ids are submitted to
+    the UniProt ID-mapping API — so the API is hit at most once per id
+    across ALL database annotations and reruns. New results (positives AND
+    negatives, the latter as identity pairs) are appended to the cache when
+    output_dir is given.
+
+    Returns {original_id: current_id} for resolvable ids only.
+    """
+    ids = list(dict.fromkeys(str(i) for i in missing_ids))  # dedupe, keep order
+    if not ids:
+        return {}
+    cached = load_idmap(output_dir)
+    out, todo = {}, []
+    for i in ids:
+        if i in cached:
+            if cached[i] != i:      # cached positive
+                out[i] = cached[i]
+            # cached identity pair = known negative -> skip silently
         else:
-            sep = ","
-
-        dataframe = pd.read_csv(StringIO(text), sep=sep, header=0, names=col, index_col=False)
-
-        if dataframe.empty:
-            print("DataFrame пуст —  ID нет.")
-            return None
-        
-        allowed_types = ['protein', 'protein family', 'fusion protein']
-        protein_data = dataframe[
-            dataframe['TYPEA'].isin(allowed_types) & 
-            dataframe['TYPEB'].isin(allowed_types)
-        ]
-        protein_data['effect'] = None
-        conditions = [
-            protein_data['EFFECT'].str.contains('up-regulates', na=False),
-            protein_data['EFFECT'].str.contains('down-regulates', na=False),
-            protein_data['EFFECT'].str.contains('unknown', na=False)
-        ]
-
-        choices = [
-            'activate',
-            'inhibit',
-            'unknown'
-        ]
-        mechanism_map = {'Phospho' : 'phosphorylation', 'Acetyl' : 'acetylation', 'Methyl' : 'methylation', 
-                         'Carboxy':'carboxylation','Palmitoyl':'palmitoylation',
-                         'Hydroxylation':'hydroxylation', 'ADP-Ribosyl':'ADP-ribosylation',
-                         'Trimethyl':'trimethylation','Nitrosyl':'s-nitrosylation', 'Oxidation':'oxidation',
-                        'Hex':'glycosylation','Fuc': 'glycosylation'}
-        #'':'glycosylation', 'GG' : 'ubiquitination', '' : 'polyubiquitination','' : 'sumoylation','': 'monoubiquitination','':'deglycosylation'
-
-        # Заполнение новой колонки 'effect'
-        protein_data['effect'] = np.select(conditions, choices, default='unknown')
-        protein_data['position_in_protein'] = protein_data['RESIDUE'].str.findall(r'\d+').str[0]
-        #protein_data['position_in_protein'] = pd.to_numeric(protein_data['position_in_protein'], errors='coerce').astype('Int64')
-        protein_data['position_in_protein'] = protein_data['position_in_protein'].astype('Int64')
-        df_result['position_in_protein'] = df_result['position_in_protein'].astype('Int64')
-        df_result['mechanism'] = None
-        df_result['mod_name']=df_result['Modification'].apply(lambda x: x.split('@')[0])
-        df_result['mechanism'] = df_result['mod_name'].replace(
-            {pat: mech for pat, mech in mechanism_map.items()},
-            regex=True
-        )
-
-        df_result.loc[:,'disease_effect'] = None
-        df_result.loc[df_result['median_group1_coef'] > df_result['median_group2_coef'],'disease_effect'] = 'increase'
-        df_result.loc[df_result['median_group1_coef'] < df_result['median_group2_coef'],'disease_effect'] = 'decrease'
-        df_result.loc[df_result['median_group1_coef'] == df_result['median_group2_coef'],'disease_effect'] = 'no_change'
-        protein_data=protein_data.rename(columns = {'MECHANISM':'mechanism'})
-        common_df_target = df_result.merge(protein_data, left_on=['id_prot','mechanism','position_in_protein'],
-                                      right_on=['IDB','mechanism','position_in_protein'], how='inner')
-        df_detarget = df_result.copy()
-        df_detarget['mechanism'] = df_detarget['mechanism'].apply(
-            lambda x: 'de' + x if pd.notna(x) else x
-        )
-        common_df_detarget = df_detarget.merge(protein_data, left_on=['id_prot','mechanism','position_in_protein'],
-                                      right_on=['IDB','mechanism','position_in_protein'], how='inner')
-        
-        common_df_ensyme = df_result.merge(protein_data, left_on=['id_prot','mechanism','position_in_protein'],
-                                      right_on=['IDA','mechanism','position_in_protein'], how='inner')
-        common_df_deensyme = df_detarget.merge(protein_data, left_on=['id_prot','mechanism','position_in_protein'],
-                                      right_on=['IDA','mechanism','position_in_protein'], how='inner')
-        df = pd.concat(
-            [common_df_target, common_df_detarget, common_df_ensyme, common_df_deensyme],
-            ignore_index=True
-        )
-        return df
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error: {e}")
-        return None
-    except pd.errors.ParserError as e:
-        logger.error(f"Error: {e}")
-        return None
-
-
-
-def grafs(common_df, id_prot, output_dir):
-    G = nx.DiGraph()
-
-    for _, r in common_df.iterrows():
-        G.add_edge(
-            r.IDA, r.IDB,
-            kind=r.mechanism,
-            site=r.position_in_protein,
-            effect=r.effect,
-            weight=r.SCORE
-        )
-
-        if r.IDA in id_prot:
-            G.nodes[r.IDA]["disease_effect"] = r.disease_effect
-        else:
-            G.nodes[r.IDA]["disease_effect"] = "no findings"
-
-        if r.IDB in id_prot:
-            G.nodes[r.IDB]["disease_effect"] = r.disease_effect
-        else:
-            G.nodes[r.IDB]["disease_effect"] = "no findings"
-
-    net = Network(height="700px", width="100%", bgcolor="#222222", font_color="white", directed=True)
-
-    for n, attrs in G.nodes(data=True):
-        disease_effect = attrs.get("disease_effect")
-
-        if disease_effect == "increase":
-            color = "red"
-            shape = "triangle"
-        elif disease_effect == "decrease":
-            color = "blue"
-            shape = "box"
-        elif disease_effect == "no_change":
-            color = "green"
-            shape = "dot"
-        else:
-            color = "gray"
-            shape = "dot"
-
-        node_label = n
-        node_size = 20
-
-        net.add_node(
-            n, label=node_label, title=f"{n}, disease_effect={disease_effect}",
-            color=color, size=node_size, shape=shape
-        )
-
-
-    for u, v, attrs in G.edges(data=True):
-        edge_label = ""
-        edge_color = ""
-
-        if attrs.get("effect") == "activate":
-            edge_color = "red"
-            edge_label = "+"
-        elif attrs.get("effect") == "inhibit":
-            edge_color = "blue"
-            edge_label = "-"
-        else:
-            edge_color = "gray"
-            edge_label = "?"
-
-        net.add_edge(u, v, title=str(attrs), label=edge_label, color=edge_color, arrows="to")
-
-    # ===== legent =====
-    legend_opts = dict(physics=False, fixed=True)
-    net.add_node(
-        'legend_bg',
-        label='',  # без текста
-        shape='box',
-        color={'background': '#333333', 'border': '#333333'},
-        x=-1270, y=-750,
-        widthConstraint=200, heightConstraint=550,
-        physics=False, fixed=True
-    )
-
-    net.add_node('legend_edges', label='Edge legend:', shape='text',
-                 x=-1300, y=-1000, font={'color': 'yellow', 'size': 25}, **legend_opts)
-    net.add_node('legend_nodes', label='Node legend:', shape='text',
-                 x=-1300, y=-720, font={'color': 'yellow', 'size': 25}, **legend_opts)
-
-    net.add_node('legend_edge1', label='+ (активация)', color='red', shape='dot',
-                 x=-1280, y=-960, **legend_opts)
-    net.add_node('legend_edge2', label='- (ингибирование)', color='blue', shape='dot',
-                 x=-1280, y=-880, **legend_opts)
-    net.add_node('legend_edge3', label='? (неизвестно)', color='gray', shape='dot',
-                 x=-1280, y=-800, **legend_opts)
-
-    net.add_node('legend_node1', label='increase PTM in AD', color='red', shape='triangle',
-                 x=-1280, y=-680, **legend_opts)
-    net.add_node('legend_node2', label='decrease PTM in AD', color='blue', shape='box',
-                 x=-1280, y=-600, **legend_opts)
-    net.add_node('legend_node3', label='no changes', color='green', shape='dot',
-                 x=-1280, y=-540, **legend_opts)
-
-    net.save_graph(os.path.join(output_dir,"network.html"))
-    
-    
+            todo.append(i)
+    if not todo:
+        return out
+    new_map = map_uniprot_ids(todo)
+    resolved = {k: v for k, v in new_map.items() if v and v != k}
+    out.update(resolved)
+    if output_dir:
+        for k in todo:  # negatives are cached as identity pairs
+            cached[k] = resolved.get(k, k)
+        try:
+            _save_idmap(output_dir, cached)
+            if resolved:
+                logger.info(f"UniProt ID-mapping cache updated (+{len(resolved)} "
+                            f"resolved): {os.path.join(output_dir, IDMAP_CACHE_FILENAME)}")
+        except OSError as e:
+            logger.warning(f"Could not write the UniProt ID-mapping cache: {e}")
+    return out
