@@ -733,8 +733,7 @@ def main():
                 stats_df['peptide_clean'] = stats_df['peptide'].astype(str).str.replace(r'[^A-Z]', '', regex=True)
             if 'isotope_error' not in stats_df.columns:
                 stats_df['isotope_error'] = 0
-            stats_df = stats_df.drop_duplicates(
-                    subset=['file_name', 'scannr','protein', 'position_in_protein','peptide'])
+            stats_df = stats_df.drop_duplicates().reset_index(drop=True)
 
         # --- site annotation via dbPTM (optional, before statistics) ---
         # dbptm_annotation=True: unique sites are additionally annotated

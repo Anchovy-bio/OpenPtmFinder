@@ -186,6 +186,7 @@ def map_mod_positions(results: pd.DataFrame,
     for row in results.itertuples(index=False):
         clean_pep = getattr(row, "peptide_clean", None)
         pep_ph = getattr(row, "peptide_phospho", None)
+        pep = getattr(row, "peptide", None)
         if not clean_pep or not pep_ph:
             continue
         offsets = _kept_mod_offsets(pep_ph, mod_keep_regex)
@@ -209,8 +210,9 @@ def map_mod_positions(results: pd.DataFrame,
                 rec = dict(base)
                 rec["protein"] = prot_id
                 rec["position_in_protein"] = int(start + off)
-                rec["peptide"] = pep_ph
+                rec["peptide_phospho"] = pep_ph
                 rec["Modification"] = mod_name
+                rec["peptide"] = pep
                 rows.append(rec)
     return pd.DataFrame(rows)
 
@@ -224,7 +226,7 @@ def samples_annotation_sage(full_df: pd.DataFrame, group_df_link: str) -> pd.Dat
         df = df.rename(columns={"filename": "file_name"})
     if "file_name" not in df.columns:
         raise KeyError("Sage results need a 'filename' or 'file_name' column.")
-
+    df['file_name'] = df['file_name'].str.split('.').str[0]
     try:
         group_df = pd.read_csv(group_df_link, sep=None, engine="python")
     except Exception as e:
@@ -335,6 +337,7 @@ def prepare_sage_phospho(sage_dir: str,
         tmt["scannr"] = tmt["scannr"].astype(str)
         annot_df["file_name"] = annot_df["file_name"].astype(str)
         tmt["file_name"] = tmt["file_name"].astype(str)
+        tmt['file_name'] = tmt['file_name'].str.split('.').str[0]
         tmt_small = tmt[["file_name", "scannr"] + intensity_cols].copy()
         merged = annot_df.merge(tmt_small, on=["file_name", "scannr"], how="inner")
         if merged.empty:

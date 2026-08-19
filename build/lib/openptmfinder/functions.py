@@ -911,7 +911,11 @@ def _raw_intensity_columns(df: pd.DataFrame, intensity_prefix: str, norm_suffix:
     return cols
 
 
-def _map_to_raw_intensity(tokens: Sequence[str], intensity_cols: Sequence[str], intensity_prefix: str) -> List[str]:
+def _map_to_raw_intensity(
+    tokens: Sequence[str],
+    intensity_cols: Sequence[str],
+    intensity_prefix: str
+) -> List[str]:
     available = set(intensity_cols)
     mapped = []
     for tok in tokens:
@@ -985,6 +989,23 @@ def tmt_normalization(df: pd.DataFrame,
     del duplicate_spectrum  # kept only for API compatibility; no merge is used
 
     out = df.copy()
+    if intensity_prefix=='tmt_':
+        _SAGE_TMT_MAP = {
+            "tmt_1":  "126",
+            "tmt_2":  "127N",
+            "tmt_3":  "127C",
+            "tmt_4":  "128N",
+            "tmt_5":  "128C",
+            "tmt_6":  "129N",
+            "tmt_7":  "129C",
+            "tmt_8":  "130N",
+            "tmt_9":  "130C",
+            "tmt_10": "131",
+            "tmt_11": "131C",
+        }
+        rename_map = {k: f"tmt_{v}" for k, v in _SAGE_TMT_MAP.items()}
+        out = out.rename(columns={k: v for k, v in rename_map.items() if k in out.columns})
+        
     intensity_cols = _raw_intensity_columns(out, intensity_prefix, return_suffix)
     norm_cols = [f"{c}{return_suffix}" for c in intensity_cols]
     for c in norm_cols:
@@ -1010,7 +1031,7 @@ def tmt_normalization(df: pd.DataFrame,
         X_log = np.log2(X.loc[work_idx, intensity_cols])
 
     batches = _batch_series(out.loc[work_idx])
-    batch_levels = list(pd.unique(batches))
+    batch_levels = list(pd.unique(batches))        
 
     # GIS channels per batch, using the first non-empty annotation in the batch.
     batch_gis = {}

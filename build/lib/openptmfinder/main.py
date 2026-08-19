@@ -305,6 +305,13 @@ def main():
     perm_logfc_thresh = float(config.get('STATISTICS', 'perm_logfc_thresh', fallback=1.0))
     perm_exact_threshold = int(config.get('STATISTICS', 'perm_exact_threshold', fallback=5000))
     perm_seed = int(config.get('STATISTICS', 'perm_seed', fallback=42))
+    perm_calib_perms = int(config.get('STATISTICS', 'perm_calib_perms', fallback=20))
+    run_spikein = config.getboolean('STATISTICS', 'run_spikein', fallback=False)
+    spike_effects = tuple(float(s) for s in re.split(
+        r'\s*,\s*', config.get('STATISTICS', 'spike_effects',
+                                fallback='0.5,0.75,1,1.5,2')) if s)
+    spike_fraction = float(config.get('STATISTICS', 'spike_fraction', fallback=0.05))
+    spike_reps = int(config.get('STATISTICS', 'spike_reps', fallback=3))
 
     # --- modification filters and aliases ---
     exclude_modifications = [s for s in re.split(
@@ -348,10 +355,15 @@ def main():
         perm_logfc_thresh=perm_logfc_thresh,
         perm_exact_threshold=perm_exact_threshold,
         perm_seed=perm_seed,
+        perm_calib_perms=perm_calib_perms,
+        run_spikein=run_spikein,
+        spike_effects=spike_effects,
+        spike_fraction=spike_fraction,
+        spike_reps=spike_reps,
     )
 
     logger.info(f'PARAMETERS:\n  - type_of_modifications: {type_of_modification}\n  - name_of_modification: {name_of_modification}\n  - localization_score_threshold: {localization_score_threshold}\n  - mass_tolerance: {mass_tolerance}\n  - fdr_threshold: {fdr_threshold}\n  - type_tmt: {type_tmt}\n  - calculation_pval: {calculation_pval}\n  - min_group_for_stats: {min_group_for_stats}\n  - sorting_pepxml: {sorting_pepxml}\n  - port: {port_n}\n  - min_hits_for_fdr_calc: {min_hits_for_fdr_calc}\n  - default_hyperscore_threshold: {default_hyperscore_threshold}\n  - default_expect_threshold: {default_expect_threshold}')
-    logger.info(f'STATS PARAMETERS:\n  - calculating_method: {method}\n  - type_experiment: {type_experiment}\n  - min_batches: {min_batches}\n  - min_sites_mod: {min_sites_mod}\n  - min_ref: {min_ref}\n  - min_obs_per_site: {min_obs_per_site}\n  - min_pairs_for_stoich: {min_pairs_for_stoich}\n  - min_sites_for_common: {min_sites_for_common}\n  - min_sites_eb: {min_sites_eb}\n  - icc_mode: {icc_mode}\n  - fixed_icc: {fixed_icc}\n  - huber_c: {huber_c}\n  - huber_iters: {huber_iters}\n  - var_floor_pct: {var_floor_pct}\n  - eb_d0_floor: {eb_d0_floor}\n  - eb_d0_ceil: {eb_d0_ceil}\n  - exclude_modifications: {exclude_modifications}\n  - modification_aliases: {modification_aliases!r}\n  - run_permutation: {run_permutation}\n  - n_perm: {n_perm}\n  - perm_alpha: {perm_alpha}\n  - perm_logfc_thresh: {perm_logfc_thresh}\n  - perm_exact_threshold: {perm_exact_threshold}\n  - perm_seed: {perm_seed}')
+    logger.info(f'STATS PARAMETERS:\n  - calculating_method: {method}\n  - type_experiment: {type_experiment}\n  - min_batches: {min_batches}\n  - min_sites_mod: {min_sites_mod}\n  - min_ref: {min_ref}\n  - min_obs_per_site: {min_obs_per_site}\n  - min_pairs_for_stoich: {min_pairs_for_stoich}\n  - min_sites_for_common: {min_sites_for_common}\n  - min_sites_eb: {min_sites_eb}\n  - icc_mode: {icc_mode}\n  - fixed_icc: {fixed_icc}\n  - huber_c: {huber_c}\n  - huber_iters: {huber_iters}\n  - var_floor_pct: {var_floor_pct}\n  - eb_d0_floor: {eb_d0_floor}\n  - eb_d0_ceil: {eb_d0_ceil}\n  - exclude_modifications: {exclude_modifications}\n  - modification_aliases: {modification_aliases!r}\n  - run_permutation: {run_permutation}\n  - n_perm: {n_perm}\n  - perm_alpha: {perm_alpha}\n  - perm_logfc_thresh: {perm_logfc_thresh}\n  - perm_exact_threshold: {perm_exact_threshold}\n  - perm_seed: {perm_seed}\n  - perm_calib_perms: {perm_calib_perms}\n  - run_spikein: {run_spikein}\n  - spike_effects: {spike_effects}\n  - spike_fraction: {spike_fraction}\n  - spike_reps: {spike_reps}')
     logger.info(f'NORMALIZATION PARAMETERS:\n  - norm_target: {norm_target}\n  - norm_min_fraction_valid: {norm_min_fraction_valid}\n  - norm_use_gis_for_batch: {norm_use_gis_for_batch}')
     logger.info(f'INPUT/PREPROCESSING:\n  - search_engine: {search_engine}\n  - sage_results_filename: {sage_results_filename}\n  - sage_tmt_filename: {sage_tmt_filename}\n  - sage_intensity_prefix: {sage_intensity_prefix}\n  - sage_fdr_method: {sage_fdr_method}\n  - sage_mod_keep_regex: {sage_mod_keep_regex}\n  - sage_mod_name: {sage_mod_name}\n  - sage_require_mod: {sage_require_mod}\n  - sage_map_all_proteins: {sage_map_all_proteins}')
     logger.info(f'DB ANNOTATION:\n  - db_annotation: {db_annotation}\n  - iptmnet_rescue: {iptmnet_rescue}\n  - iptmnet_window: {iptmnet_window}\n  - dbptm_annotation: {dbptm_annotation}\n  - dbptm_window: {dbptm_window}\n  - signor_annotation: {signor_annotation}\n  - signor_organism: {signor_organism}\n  - signor_network: {signor_network}\n  - signor_max_workers: {signor_max_workers}')
@@ -721,7 +733,8 @@ def main():
                 stats_df['peptide_clean'] = stats_df['peptide'].astype(str).str.replace(r'[^A-Z]', '', regex=True)
             if 'isotope_error' not in stats_df.columns:
                 stats_df['isotope_error'] = 0
-            stats_df = stats_df.drop_duplicates().reset_index(drop=True)
+            stats_df = stats_df.drop_duplicates(
+                    subset=['file_name', 'scannr','protein', 'position_in_protein','peptide'])
 
         # --- site annotation via dbPTM (optional, before statistics) ---
         # dbptm_annotation=True: unique sites are additionally annotated
@@ -804,14 +817,15 @@ def main():
             return float(np.median(pairs)) if pairs else 0.0
 
         def save_stats_results(tag, res_tuple):
-            """Save the 8-tuple returned by statistics(); guards None/empty.
+            """Save the 10-tuple returned by statistics(); guards None/empty.
 
             The design matrix is intentionally NOT saved: it is fully
             determined by the grouping file and the contrast definitions, and
             only the last contrast's design would be kept anyway.
             """
             (stats_df_res, expr_all, expr_corrected, df_site,
-             weights_df, design, noagg, perm_df) = res_tuple
+             weights_df, design, noagg, perm_df,
+             perm_pvals_df, spikein_df) = res_tuple
             if stats_df_res is None or stats_df_res.empty:
                 logger.warning(f"No testable sites for '{tag}' - nothing to save.")
                 return False
@@ -832,6 +846,19 @@ def main():
                                 f"perm_pval={pr['perm_pval']:.4f}, "
                                 f"empirical_fdr={pr['empirical_fdr']:.3f}, "
                                 f"exact={pr['exact']} (n={pr['n_perm']})")
+            if perm_pvals_df is not None and not perm_pvals_df.empty:
+                perm_pvals_df.to_csv(os.path.join(
+                    output_dir, f"permutation_pvalues_{method}_{tag}.csv"), index=False)
+                logger.info(f"Null p-value calibration [{tag}] saved "
+                            f"(permutation_pvalues_{method}_{tag}.csv, "
+                            f"{len(perm_pvals_df)} rows)")
+            if spikein_df is not None and not spikein_df.empty:
+                spikein_df.to_csv(os.path.join(output_dir, f"spikein_{method}_{tag}.csv"),
+                                  index=False)
+                for (con, eff), grp in spikein_df.groupby(['contrast', 'effect_size']):
+                    logger.info(f"Spike-in [{tag}, {con}]: |log2FC|={eff:g} -> "
+                                f"TPR={grp['tpr'].mean():.2f}, "
+                                f"FP={grp['n_false_pos'].mean():.1f}")
             logger.info(f"The final statistical result of '{tag}' is saved "
                         f"(final_stat_result_{method}_{tag}.csv)")
             return True

@@ -72,6 +72,8 @@ STAT_GLOB = "final_stat_result_*.csv"
 EXPR_GLOB = "expr_all_corrected_*.csv"
 WEIGHTS_GLOB = "weights_df_*.csv"
 PERM_GLOB = "permutation_*.csv"
+PERM_PVALS_GLOB = "permutation_pvalues_*.csv"
+SPIKEIN_GLOB = "spikein_*.csv"
 
 REPORT_DATA_DIR = "report_data"
 
@@ -180,6 +182,8 @@ def load_weights(output_dir: str) -> pd.DataFrame:
 def load_permutations(output_dir: str) -> pd.DataFrame:
     frames = []
     for path in sorted(glob.glob(os.path.join(output_dir, PERM_GLOB))):
+        if os.path.basename(path).startswith("permutation_pvalues_"):
+            continue  # null-calibration table, not a per-contrast summary
         df = pd.read_csv(path)
         keep = [c for c in df.columns if c != "perm_counts"]
         df = df[keep]
@@ -191,6 +195,39 @@ def load_permutations(output_dir: str) -> pd.DataFrame:
                 if tag.startswith(meth):
                     tag = tag[len(meth):]
             df["mod_family"] = tag
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _family_tag_from_path(path: str, prefix: str) -> str:
+    """<prefix>_{method}_{tag}.csv -> tag (strip a known method prefix)."""
+    tag = os.path.basename(path)[len(prefix):-4]
+    for meth in ("aggregate_", "median_"):
+        if tag.startswith(meth):
+            tag = tag[len(meth):]
+    return tag
+
+
+def load_permutation_pvalues(output_dir: str) -> pd.DataFrame:
+    """Raw per-site p-values collected from permuted (null) datasets —
+    the calibration check table written by the statistics step."""
+    frames = []
+    for path in sorted(glob.glob(os.path.join(output_dir, PERM_PVALS_GLOB))):
+        df = pd.read_csv(path)
+        if "mod_family" not in df.columns:
+            df["mod_family"] = _family_tag_from_path(path, "permutation_pvalues_")
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def load_spikein(output_dir: str) -> pd.DataFrame:
+    """Spike-in sensitivity experiment results (one row per
+    effect size x replicate x contrast)."""
+    frames = []
+    for path in sorted(glob.glob(os.path.join(output_dir, SPIKEIN_GLOB))):
+        df = pd.read_csv(path)
+        if "mod_family" not in df.columns:
+            df["mod_family"] = _family_tag_from_path(path, "spikein_")
         frames.append(df)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
@@ -904,6 +941,117 @@ def permutation_bar_figure(perm: pd.DataFrame):
     return fig
 
 
+def null_calibration_figure(perm_pvals: pd.DataFrame):
+    """Pooled p-value distribution of the permuted (null) datasets.
+
+    A calibrated test yields a flat (Uniform) histogram; the dashed line is
+    the expected per-bin count under uniformity. Deviations (U-shape, spike
+    near 1, systematic slope) indicate miscalibration of the testing
+    procedure itself, since the permuted data carry no real signal."""
+    if perm_pvals.empty or "p_value" not in perm_pvals.columns:
+        return None
+    d = perm_pvals.dropna(subset=["p_value"]).copy()
+    if d.empty:
+        return None
+    d["label"] = (d["mod_family"].astype(str) + ": " + d["contrast"].astype(str)
+                  if "mod_family" in d.columns else d["contrast"].astype(str))
+    labels = sorted(d["label"].unique())
+    n = len(labels)
+    cols = min(n, 3)
+    rows = int(np.ceil(n / cols))
+    palette = ["#1d4e89", "#2a9d8f", "#e07a5f", "#7b2cbf", "#00b4d8",
+               "#f3722c", "#4361ee", "#90be6d"]
+    n_bins = 20
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=labels,
+                        horizontal_spacing=0.07, vertical_spacing=0.12)
+    for i, lab in enumerate(labels):
+        sub = d[d["label"] == lab]
+        r, c = i // cols + 1, i % cols + 1
+        fig.add_trace(go.Histogram(
+            x=sub["p_value"], xbins=dict(start=0, end=1, size=1 / n_bins),
+            marker_color=palette[i % len(palette)],
+            marker_line=dict(color="white", width=0.5),
+            hovertemplate="p ∈ [%{x:.2f}, +0.05): %{y} site×perm"
+                          "<extra></extra>"), row=r, col=c)
+        fig.add_shape(type="line", x0=0, x1=1,
+                      y0=len(sub) / n_bins, y1=len(sub) / n_bins,
+                      line=dict(dash="dash", color="#e63946", width=1),
+                      row=r, col=c)
+        fig.update_xaxes(range=[0, 1], row=r, col=c)
+    fig.update_layout(title="Null p-value calibration (permuted datasets) "
+                            "<sup>flat = calibrated test; dashed = uniform "
+                            "expectation</sup>",
+                      showlegend=False,
+                      height=max(300, 280 * rows),
+                      **_BASE_LAYOUT)
+    fig.update_annotations(font=dict(size=12, color="#1d4e89"))
+    for i in range(n):
+        fig.update_xaxes(title_text="null p-value",
+                         row=i // cols + 1, col=i % cols + 1)
+        fig.update_yaxes(title_text="site×perm", row=i // cols + 1, col=1)
+    return fig
+
+
+def spikein_figure(spk: pd.DataFrame):
+    """Spike-in sensitivity: recovery rate (TPR) and false positives vs the
+    spiked |log2FC|. Points/lines are means over replicates, error bars span
+    the replicate range. Shows that the procedure actually recovers signal of
+    the declared size while keeping false positives low."""
+    if spk.empty or "tpr" not in spk.columns or "effect_size" not in spk.columns:
+        return None
+    d = spk.copy()
+    d["label"] = (d["mod_family"].astype(str) + ": " + d["contrast"].astype(str)
+                  if "mod_family" in d.columns and "contrast" in d.columns
+                  else d.get("contrast", pd.Series("", index=d.index)).astype(str))
+    d["label"] = d["label"].where(d["label"].str.strip() != "", "spike-in")
+    labels = sorted(d["label"].unique())
+    palette = ["#1d4e89", "#2a9d8f", "#e07a5f", "#7b2cbf", "#00b4d8",
+               "#f3722c", "#4361ee", "#90be6d"]
+    fig = make_subplots(cols=2, rows=1,
+                        subplot_titles=["Recovery rate (power)",
+                                        "False positives (mean per replicate)"],
+                        horizontal_spacing=0.1)
+    for i, lab in enumerate(labels):
+        sub = d[d["label"] == lab]
+        g = sub.groupby("effect_size")
+        eff = g.size().index.to_numpy(dtype=float)
+        tpr_mean = g["tpr"].mean().to_numpy()
+        tpr_min = g["tpr"].min().to_numpy()
+        tpr_max = g["tpr"].max().to_numpy()
+        fp_mean = g["n_false_pos"].mean().to_numpy()
+        color = palette[i % len(palette)]
+        fig.add_trace(go.Scatter(
+            x=eff, y=tpr_mean, mode="lines+markers", name=lab,
+            legendgroup=lab, showlegend=True,
+            line=dict(color=color),
+            error_y=dict(type="data", symmetric=False,
+                         array=tpr_max - tpr_mean,
+                         arrayminus=tpr_mean - tpr_min, width=3),
+            hovertemplate="%{text}<br>|log2FC|=%{x:g}<br>TPR=%{y:.2f}"
+                          "<extra></extra>", text=[lab] * len(eff)),
+            row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=eff, y=fp_mean, mode="lines+markers", name=lab,
+            legendgroup=lab, showlegend=False,
+            line=dict(color=color, dash="dot"),
+            hovertemplate="%{text}<br>|log2FC|=%{x:g}<br>mean FP=%{y:.1f}"
+                          "<extra></extra>", text=[lab] * len(eff)),
+            row=1, col=2)
+    fig.update_xaxes(title_text="spiked |log2FC|", row=1, col=1)
+    fig.update_xaxes(title_text="spiked |log2FC|", row=1, col=2)
+    fig.update_yaxes(title_text="TPR", range=[0, 1.05], row=1, col=1)
+    fig.update_yaxes(title_text="false positives", row=1, col=2)
+    fig.update_layout(title="Spike-in sensitivity on the permuted null "
+                            "<sup>known effect added to a random fraction of "
+                            "sites</sup>",
+                      height=380,
+                      legend=dict(orientation="h", y=-0.22, x=0.5,
+                                  xanchor="center"),
+                      **_BASE_LAYOUT)
+    fig.update_annotations(font=dict(size=12, color="#1d4e89"))
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Database annotation figures (iPTMnet / dbPTM / SIGNOR site-level caches)
 # ---------------------------------------------------------------------------
@@ -1550,6 +1698,8 @@ def generate_report(output_dir: str,
     expr = load_expression(output_dir)
     weights = load_weights(output_dir)
     perm = load_permutations(output_dir)
+    perm_pvals = load_permutation_pvalues(output_dir)
+    spk = load_spikein(output_dir)
     annot = load_annotated(output_dir)
     fasta_seqs = load_fasta_dict(fasta_file)
 
@@ -1714,6 +1864,25 @@ pick one of the top-significant or type any protein id.</p>
     pb = permutation_bar_figure(perm)
     if pb is not None:
         qc_parts.append(_fig_div(pb, "qc_perm_bar"))
+    nc = null_calibration_figure(perm_pvals)
+    if nc is not None:
+        qc_parts.append("<h3>Null p-value calibration</h3>" +
+                        '<p class="note">Pooled raw p-values from the '
+                        'permuted (label-shuffled) datasets, which contain no '
+                        'real signal by construction: a flat histogram at the '
+                        'dashed uniform-expectation line means the testing '
+                        'procedure controls Type I error.</p>' +
+                        _fig_div(nc, "qc_null_calib"))
+    si = spikein_figure(spk)
+    if si is not None:
+        qc_parts.append("<h3>Spike-in sensitivity</h3>" +
+                        '<p class="note">A known log2FC was added to a random '
+                        'fraction of sites on top of the permuted null and '
+                        'the same pipeline was re-run: the left panel is the '
+                        'recovery rate (power) vs the spiked effect size, the '
+                        'right panel the mean number of false positives among '
+                        'non-spiked sites.</p>' +
+                        _fig_div(si, "qc_spikein"))
     ph = pvalue_histogram_figure(stats)
     if ph is not None:
         qc_parts.append(_fig_div(ph, "qc_pval"))

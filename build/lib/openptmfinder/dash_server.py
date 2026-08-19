@@ -36,19 +36,25 @@ logger = logging.getLogger(__name__)
 
 try:  # package import
     from .report import (load_stat_results, load_annotated, load_expression,
-                         load_weights, load_permutations, load_db_annotation,
+                         load_weights, load_permutations,
+                         load_permutation_pvalues, load_spikein,
+                         load_db_annotation,
                          load_fasta_dict, mod_color_map, single_protein_figure,
                          ptm_landscape_figures, heatmap_figure, qc_figures,
                          pvalue_histogram_figure, ma_figure,
-                         permutation_bar_figure, db_annotation_figures,
+                         permutation_bar_figure, null_calibration_figure,
+                         spikein_figure, db_annotation_figures,
                          DB_ANNOTATION_FILES, _BASE_LAYOUT)
 except ImportError:  # standalone usage
     from report import (load_stat_results, load_annotated, load_expression,
-                        load_weights, load_permutations, load_db_annotation,
+                        load_weights, load_permutations,
+                        load_permutation_pvalues, load_spikein,
+                        load_db_annotation,
                         load_fasta_dict, mod_color_map, single_protein_figure,
                         ptm_landscape_figures, heatmap_figure, qc_figures,
                         pvalue_histogram_figure, ma_figure,
-                        permutation_bar_figure, db_annotation_figures,
+                        permutation_bar_figure, null_calibration_figure,
+                        spikein_figure, db_annotation_figures,
                         DB_ANNOTATION_FILES, _BASE_LAYOUT)
 
 CARD_COLORS = ["linear-gradient(140deg,#0f2540,#1d4e89)",
@@ -137,6 +143,8 @@ def create_app(output_dir: str, fasta_file: str = None):
     expr = load_expression(output_dir)
     weights = load_weights(output_dir)
     perm = load_permutations(output_dir)
+    perm_pvals = load_permutation_pvalues(output_dir)
+    spk = load_spikein(output_dir)
     db_ann = load_db_annotation(output_dir)
     fasta_seqs = load_fasta_dict(fasta_file)
 
@@ -195,6 +203,8 @@ def create_app(output_dir: str, fasta_file: str = None):
     # ---- QC figures ----
     qc_stat_figs = []
     for f in (permutation_bar_figure(perm),
+              null_calibration_figure(perm_pvals),
+              spikein_figure(spk),
               pvalue_histogram_figure(stats),
               ma_figure(stats, expr, alpha=0.05, logfc_thr=1.0)):
         if f is not None:
@@ -338,7 +348,11 @@ def create_app(output_dir: str, fasta_file: str = None):
                            "with a spike near 0 for real signal; MA plots show "
                            "whether hits are driven by low-abundance sites; "
                            "the permutation panel compares observed hits with "
-                           "the label-permutation null.", style=_S["note"]),
+                           "the label-permutation null; the calibration panel "
+                           "shows pooled p-values from permuted datasets "
+                           "(flat = calibrated test); the spike-in panel "
+                           "shows recovery of a known effect added to the "
+                           "null.", style=_S["note"]),
                     html.Div(children=[dcc.Graph(figure=f)
                                        for f in qc_stat_figs]),
                 ])] if qc_stat_figs else

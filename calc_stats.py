@@ -684,43 +684,6 @@ def run_limma_py(expr: pd.DataFrame,
     return res
 
 
-def _batch_perm_structure(design: pd.DataFrame, coef_name: str = "Condition"):
-    """Within-batch permutation structure of the condition labels.
-
-    Returns (cond, per_batch, n_distinct):
-      cond        - label vector (float 0/1) aligned with design.index;
-      per_batch   - list of (sample index array, n_ones) for batches that
-                    contain BOTH groups (only these are permutable);
-      n_distinct  - total number of distinct within-batch labelings
-                    (product of C(n_b, n1_b) over permutable batches).
-    """
-    if coef_name not in design.columns:
-        raise KeyError(f"coef_name='{coef_name}' not found in design.columns")
-
-    batch_cols = [c for c in design.columns if str(c).startswith("Batch")]
-    if batch_cols:
-        batch_id = design[batch_cols].apply(
-            lambda r: r.idxmax() if r.sum() > 0 else "Batch_first", axis=1)
-    else:
-        batch_id = pd.Series("all", index=design.index)
-
-    cond = design[coef_name].to_numpy(dtype=float)
-    batch_arr = batch_id.to_numpy()
-
-    per_batch = []
-    n_distinct = 1
-    for b in pd.unique(batch_id):
-        idx = np.where(batch_arr == b)[0]
-        n_b = len(idx)
-        n1 = int(round(cond[idx].sum()))
-        if n1 == 0 or n1 == n_b:
-            continue      # no permutable group structure in this batch
-        per_batch.append((idx, n1))
-        n_distinct *= comb(n_b, n1)
-
-    return cond, per_batch, n_distinct
-
-
 def permutation_limma(expr_pw: pd.DataFrame, design: pd.DataFrame,
                       weights_df: Optional[pd.DataFrame] = None,
                       n_perm: int = 1000, alpha: float = 0.05,
@@ -755,6 +718,9 @@ def permutation_limma(expr_pw: pd.DataFrame, design: pd.DataFrame,
       empirical_fdr     - mean(N_null) / max(N_obs, 1), capped at 1
       plus summary statistics of the null distribution.
     """
+    if coef_name not in design.columns:
+        raise KeyError(f"coef_name='{coef_name}' not found in design.columns")
+
     lm_kwargs = dict(skip_eb=skip_eb, min_sites_eb=min_sites_eb,
                      eb_d0_floor=eb_d0_floor, eb_d0_ceil=eb_d0_ceil)
 
@@ -769,7 +735,26 @@ def permutation_limma(expr_pw: pd.DataFrame, design: pd.DataFrame,
     obs_hits = n_hits(res_obs)
 
     # --- batch structure of the design ---
-    cond, per_batch, n_distinct = _batch_perm_structure(design, coef_name)
+    batch_cols = [c for c in design.columns if str(c).startswith("Batch")]
+    if batch_cols:
+        batch_id = design[batch_cols].apply(
+            lambda r: r.idxmax() if r.sum() > 0 else "Batch_first", axis=1)
+    else:
+        batch_id = pd.Series("all", index=design.index)
+
+    cond = design[coef_name].to_numpy(dtype=float)
+    batch_arr = batch_id.to_numpy()
+
+    per_batch = []        # (sample indices, n_ones) per batch
+    n_distinct = 1
+    for b in pd.unique(batch_id):
+        idx = np.where(batch_arr == b)[0]
+        n_b = len(idx)
+        n1 = int(round(cond[idx].sum()))
+        if n1 == 0 or n1 == n_b:
+            continue      # no permutable group structure in this batch
+        per_batch.append((idx, n1))
+        n_distinct *= comb(n_b, n1)
 
     if len(per_batch) == 0:
         logger.warning("permutation_limma: no batch contains both groups; "
@@ -835,170 +820,6 @@ def permutation_limma(expr_pw: pd.DataFrame, design: pd.DataFrame,
     }
 
 
-def permutation_pvalue_calibration(expr_pw: pd.DataFrame, design: pd.DataFrame,
-                                   weights_df: Optional[pd.DataFrame] = None,
-                                   n_perms: int = 20,
-                                   seed: Optional[int] = None,
-                                   skip_eb: bool = False,
-                                   min_sites_eb: int = 30,
-                                   eb_d0_floor: float = 2.0,
-                                   eb_d0_ceil: float = 200.0,
-                                   coef_name: str = "Condition"
-                                   ) -> Optional[Tuple[pd.DataFrame, Dict[str, Any]]]:
-    """Null p-value calibration of the testing procedure.
-
-    Draws `n_perms` random within-batch label permutations, re-runs the SAME
-    testing procedure (WLS + EB moderation) on each and collects the raw
-    per-site p-values. Under a calibrated test the pooled null p-values are
-    Uniform(0,1); per-permutation Kolmogorov-Smirnov statistics against the
-    uniform are returned alongside.
-
-    Returns (pvals_df, summary):
-      pvals_df - long DataFrame [permutation, site, p_value];
-      summary  - dict with per-permutation KS statistics and their medians
-                 (ks_stat_median / ks_pval_median). A small KS p-value
-                 (e.g. < 0.05) for most permutations indicates miscalibration.
-    """
-    cond, per_batch, _n_distinct = _batch_perm_structure(design, coef_name)
-    if len(per_batch) == 0:
-        logger.warning("permutation_pvalue_calibration: no batch contains "
-                       "both groups; nothing to permute.")
-        return None
-    if n_perms <= 0:
-        return None
-
-    lm_kwargs = dict(skip_eb=skip_eb, min_sites_eb=min_sites_eb,
-                     eb_d0_floor=eb_d0_floor, eb_d0_ceil=eb_d0_ceil)
-    rng = np.random.default_rng(None if seed is None else seed + 101)
-
-    frames, ks_stats, ks_pvals = [], [], []
-    for p in range(n_perms):
-        new_cond = cond.copy()
-        for idx, _n1 in per_batch:
-            new_cond[idx] = cond[rng.permutation(idx)]
-        perm_design = design.copy()
-        perm_design[coef_name] = new_cond
-        res = run_limma_py(expr_pw, perm_design, sample_weights=weights_df,
-                           coef_name=coef_name, **lm_kwargs)
-        if res is None or res.empty or 'P.Value' not in res.columns:
-            continue
-        pv = res['P.Value'].dropna()
-        if pv.empty:
-            continue
-        frames.append(pd.DataFrame({'permutation': p,
-                                    'site': pv.index.to_numpy(),
-                                    'p_value': pv.to_numpy()}))
-        ks = stats.kstest(pv.to_numpy(), 'uniform')
-        ks_stats.append(float(ks.statistic))
-        ks_pvals.append(float(ks.pvalue))
-
-    if not frames:
-        return None
-
-    pvals_df = pd.concat(frames, ignore_index=True)
-    summary = {
-        'calib_n_perms': len(frames),
-        'calib_ks_stat_median': float(np.median(ks_stats)),
-        'calib_ks_pval_median': float(np.median(ks_pvals)),
-    }
-    logger.info(f"permutation_pvalue_calibration: n={len(frames)} permutations, "
-                f"median KS stat={summary['calib_ks_stat_median']:.3f}, "
-                f"median KS p={summary['calib_ks_pval_median']:.3g}")
-    return pvals_df, summary
-
-
-def spike_in_power(expr_pw: pd.DataFrame, design: pd.DataFrame,
-                   weights_df: Optional[pd.DataFrame] = None,
-                   effects: Tuple[float, ...] = (0.5, 0.75, 1.0, 1.5, 2.0),
-                   fraction: float = 0.05,
-                   n_reps: int = 3,
-                   alpha: float = 0.05,
-                   logfc_thresh: float = 1.0,
-                   seed: Optional[int] = None,
-                   skip_eb: bool = False,
-                   min_sites_eb: int = 30,
-                   eb_d0_floor: float = 2.0,
-                   eb_d0_ceil: float = 200.0,
-                   coef_name: str = "Condition") -> Optional[pd.DataFrame]:
-    """Spike-in sensitivity (power) experiment on top of the null.
-
-    For every effect size x replicate: condition labels are permuted within
-    batches (destroying the real signal), then a known log2 effect is ADDED
-    to a random `fraction` of sites (half of them up-, half down-regulated,
-    on the samples assigned to group 1 by the permuted labeling) and the SAME
-    testing procedure is re-run. The recovery rate (TPR) among spiked sites
-    and the false-positive count among non-spiked sites quantify the
-    sensitivity and the FDR behavior at a known signal size.
-
-    Returns a DataFrame [effect_size, replicate, n_spiked, n_recovered, tpr,
-    n_false_pos, n_hits, empirical_fdr].
-    """
-    cond, per_batch, _n_distinct = _batch_perm_structure(design, coef_name)
-    if len(per_batch) == 0:
-        logger.warning("spike_in_power: no batch contains both groups; "
-                       "nothing to permute.")
-        return None
-
-    lm_kwargs = dict(skip_eb=skip_eb, min_sites_eb=min_sites_eb,
-                     eb_d0_floor=eb_d0_floor, eb_d0_ceil=eb_d0_ceil)
-    rng = np.random.default_rng(None if seed is None else seed + 202)
-
-    sites = expr_pw.index.to_numpy()
-    n_spike_total = max(1, int(round(len(sites) * fraction)))
-    grp1_cols = design.index.to_numpy()  # resolved per permutation below
-
-    records = []
-    for eff in effects:
-        for rep in range(n_reps):
-            new_cond = cond.copy()
-            for idx, _n1 in per_batch:
-                new_cond[idx] = cond[rng.permutation(idx)]
-            perm_design = design.copy()
-            perm_design[coef_name] = new_cond
-            grp1 = grp1_cols[perm_design[coef_name].to_numpy() > 0.5]
-            if grp1.size == 0:
-                continue
-
-            spiked = rng.choice(sites, size=n_spike_total, replace=False)
-            signs = np.ones(n_spike_total)
-            signs[rng.permutation(n_spike_total)[: n_spike_total // 2]] = -1.0
-
-            expr_sp = expr_pw.copy()
-            expr_sp.loc[spiked, grp1] = (expr_sp.loc[spiked, grp1]
-                                         .add(eff * signs, axis=0))
-
-            res = run_limma_py(expr_sp, perm_design, sample_weights=weights_df,
-                               coef_name=coef_name, **lm_kwargs)
-            if res is None or res.empty or 'adj.P.Val' not in res.columns:
-                continue
-
-            hits = ((res['adj.P.Val'] < alpha) &
-                    (res['logFC'].abs() >= logfc_thresh)).fillna(False)
-            spiked_mask = res.index.isin(spiked)
-            n_rec = int((hits & spiked_mask).sum())
-            n_fp = int((hits & ~spiked_mask).sum())
-            n_hits = n_rec + n_fp
-            records.append({
-                'effect_size': float(eff),
-                'replicate': rep,
-                'n_spiked': int(n_spike_total),
-                'n_recovered': n_rec,
-                'tpr': n_rec / n_spike_total,
-                'n_false_pos': n_fp,
-                'n_hits': n_hits,
-                'empirical_fdr': n_fp / max(n_hits, 1),
-            })
-
-    if not records:
-        return None
-
-    spk_df = pd.DataFrame(records)
-    logger.info("spike_in_power: " + "; ".join(
-        f"|log2FC|={eff:g}: TPR={spk_df.loc[spk_df['effect_size'] == eff, 'tpr'].mean():.2f}"
-        for eff in spk_df['effect_size'].unique()))
-    return spk_df
-
-
 def compute_batch_global_prior(batch_df: pd.DataFrame, channel_cols: list = None):
     """
     Robust global prior variance per channel for a batch.
@@ -1055,18 +876,13 @@ def statistics(df: pd.DataFrame,
                perm_alpha: float = 0.05,
                perm_logfc_thresh: float = 1.0,
                perm_exact_threshold: int = 5000,
-               perm_seed: Optional[int] = None,
-               perm_calib_perms: int = 20,
-               run_spikein: bool = False,
-               spike_effects: Tuple[float, ...] = (0.5, 0.75, 1.0, 1.5, 2.0),
-               spike_fraction: float = 0.05,
-               spike_reps: int = 3):
+               perm_seed: Optional[int] = None):
     """
     Main statistics pipeline.
 
-    ALWAYS returns a 10-tuple:
+    ALWAYS returns an 8-tuple:
         (final_df, expr_all, expr_corrected, df_site, weights_df, design,
-         noagg, perm_df, perm_pvals_df, spikein_df)
+         noagg, perm_df)
 
     Contrasts are built dynamically from all TMT_group* columns
     (works for 2, 3 or more groups).
@@ -1076,16 +892,13 @@ def statistics(df: pd.DataFrame,
 
     If run_permutation=True, each contrast is additionally validated by
     batch-stratified label permutation (permutation_limma); the per-contrast
-    summaries are returned in perm_df. When perm_calib_perms > 0 the raw
-    per-site p-values of that many permuted datasets are collected for the
-    null-calibration check (perm_pvals_df), and with run_spikein=True a
-    spike-in sensitivity experiment is performed (spikein_df).
+    summaries are returned in perm_df.
     """
-    EMPTY10 = (pd.DataFrame(),) * 10
+    EMPTY8 = (pd.DataFrame(),) * 8
 
     if df is None or df.empty:
         logger.warning("Input DataFrame is empty. Skipping statistics.")
-        return EMPTY10
+        return EMPTY8
 
     # --- dynamic group columns and pairwise contrasts ---
     group_cols = sorted(
@@ -1094,7 +907,7 @@ def statistics(df: pd.DataFrame,
     )
     if len(group_cols) < 2:
         logger.error("Need at least two TMT_group* columns to build contrasts.")
-        return EMPTY10
+        return EMPTY8
     pairwise = list(itertools.combinations(group_cols, 2))
 
     # batch -> groups mapping (elements normalized to lists of stripped strings)
@@ -1107,7 +920,7 @@ def statistics(df: pd.DataFrame,
     channel_cols = [c for c in df.columns if c.endswith('_norm')]
     if not channel_cols:
         logger.error("No *_norm channel columns found.")
-        return EMPTY10
+        return EMPTY8
 
     # drop rows with all channel columns NA
     df = df[~df[channel_cols].isna().all(axis=1)].copy()
@@ -1172,7 +985,7 @@ def statistics(df: pd.DataFrame,
         df = df[df["n_psm"] >= min_group_for_stats]
         if df.empty:
             logger.warning("No rows left after n_psm/n_batches filtering.")
-            return EMPTY10
+            return EMPTY8
 
         if type_experiment == 'phospho enrichment':
             global_prior = batch_prior(df)
@@ -1201,7 +1014,7 @@ def statistics(df: pd.DataFrame,
             mod_df = df[df['Modification'] != 'reference'].copy()
             if mod_df.empty:
                 logger.warning("No modified PSMs after filtering.")
-                return EMPTY10
+                return EMPTY8
             global_prior = batch_prior(mod_df)
 
             df_site = (mod_df.groupby(['Modification', "protein", "position_in_protein", "batch"])
@@ -1267,7 +1080,7 @@ def statistics(df: pd.DataFrame,
                          .agg(n_psm=("scannr", "count"), n_batches=("batch", pd.Series.nunique))
                          .reset_index())
             psm_stats['site'] = psm_stats["protein"].astype(str) + "_" + psm_stats["peptide"].astype(str)
-            df = df.merge(psm_stats[["n_psm", "n_batches", "peptide", "protein"]],
+            df = df.merge(psm_stats[["n_psm", "n_batches", "peptide", "protein",'site']],
                           on=["peptide", "protein"], how="left")
         else:
             df = df.drop_duplicates(subset=['peptide', 'charge', 'protein',
@@ -1290,7 +1103,7 @@ def statistics(df: pd.DataFrame,
         df = df[keep]
         if df.empty:
             logger.warning("No rows left after n_psm/n_batches filtering.")
-            return EMPTY10
+            return EMPTY8
 
         if type_experiment == 'phospho enrichment':
             global_prior = batch_prior(df)
@@ -1319,7 +1132,7 @@ def statistics(df: pd.DataFrame,
             mod_df = df[df['Modification'] != 'reference'].copy()
             if mod_df.empty:
                 logger.warning("No modified PSMs after filtering.")
-                return EMPTY10
+                return EMPTY8
             global_prior = batch_prior(mod_df)
 
             df_site = (mod_df.groupby(["batch", "peptide", 'protein'])
@@ -1379,7 +1192,7 @@ def statistics(df: pd.DataFrame,
     # ==================================================================
     if expr.empty:
         logger.warning("Expression matrix is empty after aggregation.")
-        return EMPTY10
+        return EMPTY8
 
     expr = expr.merge(psm_stats.set_index("site")[["n_psm", "n_batches"]],
                       left_index=True, right_index=True, how="left")
@@ -1441,8 +1254,6 @@ def statistics(df: pd.DataFrame,
     # ==================================================================
     final_df_list = []
     perm_records = []
-    perm_pval_frames = []
-    spike_frames = []
 
     for gA, gB in pairwise:
         def map_condition(row, gA=gA, gB=gB):
@@ -1510,62 +1321,29 @@ def statistics(df: pd.DataFrame,
                 exact_threshold=perm_exact_threshold, seed=perm_seed,
                 skip_eb=skip_eb, min_sites_eb=min_sites_eb,
                 eb_d0_floor=eb_d0_floor, eb_d0_ceil=eb_d0_ceil)
-            rec = None
             if perm_res is not None:
                 rec = {k: v for k, v in perm_res.items() if k != 'perm_counts'}
                 rec['contrast'] = f"{gB}_vs_{gA}"
                 rec['perm_counts'] = ';'.join(map(str, perm_res['perm_counts'].tolist()))
-
-            # null p-value calibration: collect raw per-site p-values from
-            # permuted datasets (uniform distribution = calibrated test)
-            if perm_calib_perms > 0:
-                calib = permutation_pvalue_calibration(
-                    expr_pw, design, weights_gr,
-                    n_perms=perm_calib_perms, seed=perm_seed,
-                    skip_eb=skip_eb, min_sites_eb=min_sites_eb,
-                    eb_d0_floor=eb_d0_floor, eb_d0_ceil=eb_d0_ceil)
-                if calib is not None:
-                    calib_df, calib_summary = calib
-                    calib_df['contrast'] = f"{gB}_vs_{gA}"
-                    perm_pval_frames.append(calib_df)
-                    if rec is not None:
-                        rec.update(calib_summary)
-
-            # spike-in sensitivity experiment on the permuted null
-            if run_spikein:
-                spk = spike_in_power(
-                    expr_pw, design, weights_gr,
-                    effects=spike_effects, fraction=spike_fraction,
-                    n_reps=spike_reps, alpha=perm_alpha,
-                    logfc_thresh=perm_logfc_thresh, seed=perm_seed,
-                    skip_eb=skip_eb, min_sites_eb=min_sites_eb,
-                    eb_d0_floor=eb_d0_floor, eb_d0_ceil=eb_d0_ceil)
-                if spk is not None and not spk.empty:
-                    spk['contrast'] = f"{gB}_vs_{gA}"
-                    spike_frames.append(spk)
-
-            if rec is not None:
                 perm_records.append(rec)
 
     perm_df = pd.DataFrame(perm_records) if perm_records else pd.DataFrame()
-    perm_pvals_df = (pd.concat(perm_pval_frames, ignore_index=True)
-                     if perm_pval_frames else pd.DataFrame())
-    spikein_df = (pd.concat(spike_frames, ignore_index=True)
-                  if spike_frames else pd.DataFrame())
 
     if not final_df_list:
         logger.warning("No contrast could be computed.")
-        return (pd.DataFrame(), expr_all, expr_corrected, df_site, weights_df,
-                design, noagg, perm_df, perm_pvals_df, spikein_df)
+        return pd.DataFrame(), expr_all, expr_corrected, df_site, weights_df, design, noagg, perm_df
 
     final_df = pd.concat(final_df_list, ignore_index=True)
 
     if method == 'median':
         if type_experiment == 'phospho enrichment':
-            final_df = final_df.merge(
-                df[["site", "n_psm", "n_batches", "peptide", 'isotope_error',
-                    'charge', 'peptide_clean']].drop_duplicates(),
-                left_on='site', right_on='site', how="left")
+            try:
+                final_df = final_df.merge(
+                    df[["site", "n_psm", "n_batches", "peptide",'peptide_clean','protein']].drop_duplicates(),
+                    left_on='site', right_on='site', how="left")
+                final_df = final_df.rename(columns={'protein':'id_prot'})
+            except:
+                print(final_df.head())
         else:
             final_df = final_df.merge(psm_stats[["site", "n_psm", "n_batches"]],
                                       on="site", how="left")
@@ -1573,5 +1351,4 @@ def statistics(df: pd.DataFrame,
         final_df = final_df.merge(psm_stats[["site", "n_psm", "n_batches"]],
                                   on="site", how="left")
 
-    return (final_df, expr_all, expr_corrected, df_site, weights_df, design,
-            noagg, perm_df, perm_pvals_df, spikein_df)
+    return final_df, expr_all, expr_corrected, df_site, weights_df, design, noagg, perm_df
